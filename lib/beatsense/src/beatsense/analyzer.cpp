@@ -111,6 +111,7 @@ void Analyzer::updateSignal(float rmsDb) {
 
 void Analyzer::updateLevels(const float groupAmp[3]) {
   const float floorAmp = powf(10.0f, cfg_.agcFloorDb / 20.0f);
+  const float invHeadroom = 1.0f / cfg_.levelHeadroom;
   for (size_t g = 0; g < Config::kGroups; g++) {
     float s = levelSm_[g] * levelDecay_;
     if (groupAmp[g] > s) s = groupAmp[g];
@@ -121,13 +122,13 @@ void Analyzer::updateLevels(const float groupAmp[3]) {
     }
     float v;
     if (cfg_.agcMode == proto::kAgcOff) {
-      v = s * cfg_.agcFixedGain;
+      v = s * cfg_.agcFixedGain * invHeadroom;
     } else {
       float pk = agcPeak_[g];
       pk = s > pk ? pk + agcAttack_ * (s - pk) : pk * agcDecay_;
       if (pk < floorAmp) pk = floorAmp; // gain clamp: never amplify beyond the gain limit
       agcPeak_[g] = pk;
-      v = s / pk;
+      v = s / pk * invHeadroom;
     }
     out_.levels[g] = toU8(v);
   }

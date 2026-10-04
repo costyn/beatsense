@@ -67,6 +67,7 @@ struct Config {
   float levelReleaseS = 0.12f;       // VU-style smoothing of the raw group level (attack is instantaneous)
   float agcAttackS = 0.010f;         // peak follower
   float agcReleaseS[4] = {8.0f, 3.0f, 20.0f, 8.0f}; // per AgcMode: normal / vivid / lazy / (off: unused)
+  float levelHeadroom = 1.15f;       // output = level / (this * peak): typical peaks land at 255 / 1.15 = 222, not pinned at full scale
   float agcFixedGain = 4.0f;         // AGC off: level = group amplitude * this
   float agcFloorDb = -54.0f;         // gain clamp: the AGC peak never goes below this (dBFS), so a band that is nearly empty (leakage,
                                      // noise) is never blown up to full scale; max gain = +54 dB

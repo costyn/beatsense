@@ -2,6 +2,7 @@
 #include <unity.h>
 #include <math.h>
 #include <stdio.h>
+#include <algorithm>
 #include <vector>
 #include <beatsense/analyzer.h>
 #include "../support/synth.h"
@@ -93,6 +94,30 @@ void test_agc_converges_across_input_gain() {
     TEST_ASSERT_TRUE_MESSAGE(q > 15 && l > 15, "levels should not be near zero");
     TEST_ASSERT_TRUE_MESSAGE(fabs(q - l) < 0.12 * fmax(q, l), "mean level differs between -30 dB and -6 dB input");
     TEST_ASSERT_TRUE(pkQ > 200 && pkL > 200);
+  }
+}
+
+// Headroom: the levels are divided by 1.15 x the follower peak, so typical peaks land near 222 and almost no frame is pinned at 255
+void test_levels_keep_headroom() {
+  synth::Spec sp;
+  sp.seconds = 45;
+  sp.snareAmp = 0.25;
+  for (int g = 0; g < 3; g++) {
+    Analyzer a;
+    std::vector<int> v;
+    size_t at255 = 0;
+    synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+      if (t < 15.0) return;
+      v.push_back(an.features().levels[g]);
+      if (an.features().levels[g] == 255) at255++;
+    });
+    std::sort(v.begin(), v.end());
+    const int p99 = v[v.size() * 99 / 100], mx = v.back();
+    char msg[80];
+    snprintf(msg, sizeof msg, "group %d: p99 %d, max %d, %.2f%% at 255", g, p99, mx, 100.0 * at255 / v.size());
+    printf("    %s\n", msg);
+    TEST_ASSERT_TRUE_MESSAGE(p99 >= 190 && p99 <= 245, msg);
+    TEST_ASSERT_TRUE_MESSAGE(at255 * 200 < v.size(), msg); // under 0.5% of the frames
   }
 }
 
@@ -231,6 +256,7 @@ int main() {
   RUN_TEST(test_groups_levels_follow_frequency);
   RUN_TEST(test_dc_blocker);
   RUN_TEST(test_agc_converges_across_input_gain);
+  RUN_TEST(test_levels_keep_headroom);
   RUN_TEST(test_agc_off_is_not_normalised);
   RUN_TEST(test_noise_gate_in_silence);
   RUN_TEST(test_gate_threshold_is_adjustable);
