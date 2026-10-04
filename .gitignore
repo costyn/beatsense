@@ -1,0 +1,9 @@
+.pio/
+.vscode/
+build/
+*.o
+*.csv
+# Real recordings are never committed; tiny generated fixtures are
+test/audio/*.wav
+!test/audio/fixture_*.wav
+__pycache__/
