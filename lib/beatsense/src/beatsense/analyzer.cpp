@@ -336,16 +336,16 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore, float &c
       best = i;
     }
   }
-  // Parabolic interpolation on the RAW comb scores around the best candidate. The octave prior and the continuity gain slope across
-  // the peak (the prior falls ~1% per 1% of tempo at 140 BPM), so interpolating the weighted scores pulled the estimate towards the
-  // prior centre (-0.17% at 140). The prior only picks the peak; the position within it comes from the raw scores. The raw maximum
-  // within +-3 steps of the picked index is used, since the weights may have picked a shoulder of the same peak.
+  // Log-parabola (Gaussian) interpolation on the RAW comb scores around the best candidate. The octave prior and the continuity gain
+  // slope across the peak (the prior falls ~1% per 1% of tempo at 140 BPM), so interpolating the weighted scores would pull the
+  // estimate towards the prior centre. The prior only picks the peak; the position within it comes from the raw scores. The raw
+  // maximum within +-3 steps of the picked index is used, since the weights may have picked a shoulder of the same peak.
   size_t peak = best;
   for (size_t i = (best >= 3 ? best - 3 : 0); i <= best + 3 && i < count; i++) {
     if (scan_[i] > scan_[peak]) peak = i;
   }
   float delta = 0;
-  if (peak > 0 && peak + 1 < count && scan_[peak - 1] > 1e-6f && scan_[peak + 1] > 1e-6f) { // Gaussian (log-parabola) interpolation
+  if (peak > 0 && peak + 1 < count && scan_[peak - 1] > 1e-6f && scan_[peak + 1] > 1e-6f) {
     const float a = logf(scan_[peak - 1]), b = logf(scan_[peak]), c = logf(scan_[peak + 1]);
     const float den = a - 2.0f * b + c;
     if (den < -1e-9f) delta = clampf(0.5f * (a - c) / den, -1.0f, 1.0f);
