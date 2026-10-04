@@ -40,9 +40,22 @@ struct Spec {
   double breakFromS = 0;
   double breakToS = 0;
   double stabAmp = 0;
+  // Bar accents. Beat b is a downbeat when (b - shift) % 4 == 0, where shift = downShiftBy from beat downShiftAtBeat on (a new
+  // section whose accents sit elsewhere in the bar). On downbeats the kick is scaled by downKick and a crash (noise burst, 0.12 s
+  // decay) of crashAmp is added. kickJitter varies every kick's amplitude by a random +-fraction (separate RNG).
+  double downKick = 1.0;
+  double crashAmp = 0;
+  int downShiftAtBeat = 1 << 30;
+  int downShiftBy = 0;
+  double kickJitter = 0;
 };
 
 inline double beatTime(const Spec &s, int n) { return s.startS + n * 60.0 / s.bpm; }
+
+inline bool isDownbeat(const Spec &s, int b) {
+  const int shift = b >= s.downShiftAtBeat ? s.downShiftBy : 0;
+  return (((b - shift) % 4) + 4) % 4 == 0;
+}
 
 // Mono float signal. Kick: 120 -> 55 Hz sweep with a 70 ms decay and a short click; hat: differentiated noise, 20 ms decay;
 // snare: noise + 190 Hz body, 50 ms decay.
@@ -50,18 +63,31 @@ inline std::vector<float> render(const Spec &sp) {
   const size_t n = (size_t)(sp.seconds * kFs);
   std::vector<float> x(n, 0.0f);
   Rng rng(sp.seed);
+  Rng jr(sp.seed + 1234), cr(sp.seed + 4321); // jitter and crash noise: separate so the rest of the signal is unchanged
   const double beat = 60.0 / sp.bpm;
   const int beats = (int)((sp.seconds - sp.startS) / beat) + 1;
   for (int b = 0; b < beats; b++) {
     const double t0 = sp.startS + b * beat;
     const bool brk = t0 >= sp.breakFromS - 1e-9 && t0 < sp.breakToS - 1e-9;
+    const bool down = isDownbeat(sp, b);
+    const double kickGain = (down ? sp.downKick : 1.0) * (1.0 + sp.kickJitter * jr.uniform());
+    if (down && sp.crashAmp > 0 && !brk) {
+      double prev = 0;
+      for (size_t i = (size_t)(t0 * kFs); i < n && i < (size_t)((t0 + 0.6) * kFs); i++) {
+        const double t = i / kFs - t0;
+        if (t < 0) continue;
+        const double w = cr.uniform();
+        x[i] += (float)(sp.crashAmp * exp(-t / 0.12) * (w - 0.5 * prev));
+        prev = w;
+      }
+    }
     // kick
     double ph = 0;
     for (size_t i = (size_t)(t0 * kFs); !brk && i < n && i < (size_t)((t0 + 0.4) * kFs); i++) {
       const double t = i / kFs - t0;
       if (t < 0) continue;
       ph += 2.0 * M_PI * (55.0 + 65.0 * exp(-t / 0.03)) / kFs;
-      x[i] += (float)(sp.kickAmp * (exp(-t / 0.07) * sin(ph) + 0.25 * exp(-t / 0.004) * rng.uniform()));
+      x[i] += (float)(sp.kickAmp * kickGain * (exp(-t / 0.07) * sin(ph) + 0.25 * exp(-t / 0.004) * rng.uniform()));
     }
     if (sp.hats) {
       const double th = t0 + beat * 0.5;

@@ -248,7 +248,12 @@ void Analyzer::processFrame() {
 
   // --- Bar position: strength of the low-band onset around each beat ---
   if (haveTempo_) {
-    if (phase_ >= 0.75f || phase_ < 0.25f) beatPeak_ = fmaxf(beatPeak_, onsetCur_[0]);
+    if (phase_ >= 0.75f || phase_ < 0.25f) {
+      float on, lv;
+      accentNow(on, lv);
+      beatOnset_ += on;
+      beatLevel_ = fmaxf(beatLevel_, lv);
+    }
     if (prevPhase_ < 0.25f && phase_ >= 0.25f) commitBeat();
   }
   prevPhase_ = phase_;
@@ -428,7 +433,7 @@ void Analyzer::updateTempo() {
   }
   if (pendingCount_ >= need) {
     setTempo(pendingBpm_);
-    for (int i = 0; i < 4; i++) barStrength_[i] = 0; // the bar grid belongs to the old tempo
+    resetBar(); // the bar grid belongs to the old tempo
     snapCount_ = cfg_.pllSnapCount; // the phase is meaningless at the new tempo: re-measure and snap on the next chance
   }
 }
@@ -498,12 +503,10 @@ void Analyzer::measurePhase() {
   phase_ += delta;
   if (phase_ >= 1.0f) {
     phase_ -= 1.0f;
-    beatCount_++;
-    beatIdx_++;
+    stepBeat(1);
   } else if (phase_ < 0.0f) {
     phase_ += 1.0f;
-    beatCount_--;
-    beatIdx_--;
+    stepBeat(-1);
   }
 }
 
@@ -511,15 +514,105 @@ void Analyzer::advanceClock() {
   phase_ += clockBpm() / 60.0f / frameRate_;
   while (phase_ >= 1.0f) {
     phase_ -= 1.0f;
-    beatCount_++;
-    beatIdx_++;
+    stepBeat(1);
   }
 }
 
+// Accent of the current hop, per group: the onset relative to the group's own recent peak (a new element, a crash) and the level
+// relative to its peak (the log-compressed onset is blind to how much louder a kick is, the level is not). Low band counts most.
+// The onset part is SUMMED over the beat window and the level part maximised: an attack that straddles two hops splits its onset
+// between them in a way that depends on the tempo and the hop grid, so a maximum would make some beats of the bar look stronger.
+void Analyzer::accentNow(float &onset, float &level) const {
+  onset = level = 0;
+  for (size_t g = 0; g < Config::kGroups; g++) {
+    onset += cfg_.barWeight[g] * fminf(onsetCur_[g] / onsetPeak_[g], 1.0f);
+    level += cfg_.barWeight[g] * (float)out_.levels[g] * (1.0f / 255.0f);
+  }
+}
+
+void Analyzer::resetBar() {
+  for (int i = 0; i < 4; i++) {
+    barSlot_[i] = 0;
+    barObs_[i] = 0;
+    barVar_[i] = 0;
+  }
+  barSet_ = false;
+  barCand_ = -1;
+  barCandBars_ = 0;
+  barPending_ = -1;
+}
+
+// One beat of the clock. The bar position steps 0,1,2,3,0... in lockstep with it; the only other thing that moves it is a pending
+// re-alignment, applied here, at a beat boundary, once.
+void Analyzer::stepBeat(int dir) {
+  beatCount_ = (uint8_t)(beatCount_ + dir);
+  beatIdx_ += (uint32_t)dir;
+  if (dir > 0 && barPending_ >= 0) {
+    const uint8_t pos = (uint8_t)((beatIdx_ - (uint32_t)barPending_) & 3);
+    if (pos != ((barPos_ + 1) & 3) && barEver_) barRealigns_++;
+    barPos_ = pos;
+    barEver_ = true;
+    barPending_ = -1;
+  } else {
+    barPos_ = (uint8_t)((barPos_ + dir) & 3);
+  }
+}
+
+// The accent around each beat is averaged per slot of the absolute beat index (EMA, a few bars). The downbeat is the strongest slot, but
+// a stable grid matters more than a correct one: the first choice is taken once every slot has been seen twice, and after that the
+// grid only moves when one other slot beats ALL the others by a clear margin at four bar boundaries in a row. Evaluated once per
+// bar (on the last beat of the bar), applied at the next beat.
 void Analyzer::commitBeat() {
-  float &slot = barStrength_[beatIdx_ & 3];
-  slot += cfg_.beatStrengthRate * (beatPeak_ - slot);
-  beatPeak_ = 0;
+  const float peak = cfg_.barOnsetScale * beatOnset_ + beatLevel_;
+  beatOnset_ = beatLevel_ = 0;
+  if (!locked_ || breakdown_ || !signal_) return; // no kick, no evidence (and the grid free-runs)
+  const size_t slot = beatIdx_ & 3;
+  if (barObs_[slot] == 0) {
+    barSlot_[slot] = peak;
+    barVar_[slot] = 0.01f * peak * peak; // prior: 10% bar-to-bar scatter
+  } else {
+    const float d = peak - barSlot_[slot];
+    barVar_[slot] += cfg_.barVarRate * (d * d - barVar_[slot]);
+    barSlot_[slot] += cfg_.barRate * d;
+  }
+  if (barObs_[slot] < 255) barObs_[slot]++;
+  if (barPos_ != 3 || barPending_ >= 0) return; // decide once per bar
+  size_t best = 0;
+  for (size_t i = 1; i < 4; i++) {
+    if (barSlot_[i] > barSlot_[best]) best = i;
+  }
+  const size_t cur = (beatIdx_ + 1) & 3; // slot of the next beat, which is the current downbeat (barPos_ == 3 now)
+  if (!barSet_) {
+    for (size_t i = 0; i < 4; i++) {
+      if (barObs_[i] < cfg_.barInitObs) return;
+    }
+    barSet_ = true;
+    barPending_ = (int8_t)best; // first choice: no margin, the grid has to start somewhere
+    return;
+  }
+  size_t second = best == 0 ? 1 : 0;
+  for (size_t i = 0; i < 4; i++) {
+    if (i != best && barSlot_[i] > barSlot_[second]) second = i;
+  }
+  // "Clearly": by a relative margin (the hop grid biases some beats by a few %) and by several standard deviations of the difference of
+  // the two slot averages (an average of independent bars scatters by sigma * sqrt(rate / (2 - rate)))
+  const float diff = barSlot_[best] - barSlot_[second];
+  const float sigmaDiff = sqrtf((barVar_[best] + barVar_[second]) * cfg_.barRate / (2.0f - cfg_.barRate));
+  if (best != cur && barSlot_[best] > cfg_.barMargin * barSlot_[second] && diff > cfg_.barSigmas * sigmaDiff) {
+    if (barCand_ == (int8_t)best) barCandBars_++;
+    else {
+      barCand_ = (int8_t)best;
+      barCandBars_ = 1;
+    }
+    if (barCandBars_ >= cfg_.barSustainBars) {
+      barPending_ = (int8_t)best;
+      barCand_ = -1;
+      barCandBars_ = 0;
+    }
+  } else {
+    barCand_ = -1;
+    barCandBars_ = 0;
+  }
 }
 
 void Analyzer::tap() {
@@ -536,8 +629,7 @@ void Analyzer::tap() {
     prevPhase_ = 0;
     phaseValid_ = true;
     snapCount_ = 0;
-    beatCount_++;
-    beatIdx_++;
+    stepBeat(1);
     buildOutput();
   }
 }
@@ -547,21 +639,17 @@ void Analyzer::buildOutput() {
   o.bpm = haveTempo_ ? clockBpm() : 0.0f;
   float p = phase_;
   uint8_t count = beatCount_;
-  uint32_t idx = beatIdx_;
+  int ahead = 0; // beats the host's latency offset puts the read ahead of the clock
   if (haveTempo_ && hostLatencyMs_ != 0) {
     p += (float)hostLatencyMs_ * 0.001f * clockBpm() / 60.0f;
     const float fl = floorf(p);
     p -= fl;
-    count = (uint8_t)(count + (int)fl);
-    idx += (int32_t)fl;
+    ahead = (int)fl;
+    count = (uint8_t)(count + ahead);
   }
   o.beatPhase = (uint16_t)clampf(p * 65536.0f, 0.0f, 65535.0f);
   o.beatCount = count;
-  int downbeat = 0;
-  for (int i = 1; i < 4; i++) {
-    if (barStrength_[i] > barStrength_[downbeat]) downbeat = i;
-  }
-  o.beatInBar = (uint8_t)((idx - (uint32_t)downbeat) & 3);
+  o.beatInBar = (uint8_t)((barPos_ + ahead) & 3);
   o.confidence = toU8(confSm_);
   o.status = (signal_ ? proto::kStatusSignal : 0) | (locked_ ? proto::kStatusLocked : 0) | (clipLeft_ > 0 ? proto::kStatusClipping : 0);
 }

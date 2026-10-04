@@ -122,7 +122,16 @@ struct Config {
   float onsetLatencySamples = 200.0f;
 
   // --- Bar position and energy ---
-  float beatStrengthRate = 0.15f; // per-slot EMA of low-band onset strength at each beat of the bar
+  // Bar position: stable beats correct. The accent around each beat (onsets of the groups, weighted, each relative to its own peak) is
+  // averaged per slot of the beat index; see docs/design.md.
+  float barWeight[3] = {1.0f, 0.5f, 0.5f}; // low / mid / high onset weights in the accent (new elements and crashes land on downbeats)
+  float barOnsetScale = 0.5f;     // summed onset ratio (about 2 hops per attack) to level units
+  float barRate = 0.4f;           // per-slot EMA weight of a new bar's accent
+  float barVarRate = 0.05f;        // ...and its slower variance estimate
+  float barSigmas = 2.0f;         // the winner must lead by this many standard deviations of the difference of two slot averages
+  uint8_t barInitObs = 2;         // the first downbeat is chosen once every slot has been seen this many times
+  float barMargin = 1.12f;        // later, another slot must beat ALL the others by this factor...
+  uint8_t barSustainBars = 4;     // ...at this many bar boundaries in a row before the grid moves (once, at a beat boundary)
   float energyShortS = 15.0f;     // ~8 bars at 125 BPM
   float energyLongS = 180.0f;
 };
@@ -147,6 +156,8 @@ public:
   void tap();
 
   const Config &config() const { return cfg_; }
+  // Times the bar grid was shifted after its first choice (see docs/design.md, "Bar position")
+  uint16_t barRealignments() const { return barRealigns_; }
   // Hops processed so far
   uint32_t frameCount() const { return frame_; }
   // Per-band log spectrum of the last frame and per-group raw flux, for tooling
@@ -169,6 +180,9 @@ private:
   bool isHarmonicRatio(float cand, float cur) const;
   void measurePhase();
   void commitBeat();
+  void accentNow(float &onset, float &level) const;
+  void resetBar();
+  void stepBeat(int dir);
   void advanceClock();
   void buildOutput();
   float odfAt(float age) const;
@@ -236,8 +250,18 @@ private:
   uint8_t beatCount_ = 0;
   uint32_t beatIdx_ = 0;
   uint8_t snapCount_ = 0;
-  float beatPeak_ = 0;
-  float barStrength_[4] = {0, 0, 0, 0};
+  float beatOnset_ = 0, beatLevel_ = 0; // accent accumulated over the current beat window
+  // Bar grid: barPos_ steps in lockstep with the beat clock; only a pending re-alignment, applied at a beat boundary, changes the step
+  uint8_t barPos_ = 0;       // beatInBar of the current beat
+  float barSlot_[4] = {0, 0, 0, 0}; // accent per slot (beatIdx_ & 3)
+  float barVar_[4] = {0, 0, 0, 0}; // bar-to-bar scatter of each slot's accent (variance)
+  uint8_t barObs_[4] = {0, 0, 0, 0};
+  bool barSet_ = false;      // first downbeat chosen (since the last reset)
+  bool barEver_ = false;     // a grid has been chosen at some point: later shifts count as re-alignments
+  int8_t barCand_ = -1;      // slot that has been winning clearly, and for how many bars in a row
+  uint8_t barCandBars_ = 0;
+  int8_t barPending_ = -1;   // slot that becomes the downbeat at the next beat
+  uint16_t barRealigns_ = 0;
   uint32_t lastTapFrame_ = 0;
   bool haveTap_ = false;
 
