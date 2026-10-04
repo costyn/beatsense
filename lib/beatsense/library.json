@@ -1,0 +1,8 @@
+{
+  "name": "beatsense",
+  "version": "0.1.0",
+  "description": "Portable audio analysis core: tempo, beat phase and band levels from raw I2S samples",
+  "license": "EUPL-1.2",
+  "frameworks": "*",
+  "platforms": "*"
+}
