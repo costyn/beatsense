@@ -78,7 +78,7 @@ Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined
 | 2 | `bpm` | u16 Q8.8 | tempo |
 | 4 | `beatPhase` | u16 | 0-65535 = position within the current beat at the time of the read (0 = the beat) |
 | 6 | `beatCount` | u8 | wraps; increments each beat |
-| 7 | `beatInBar` | u8 | 0-3, best guess |
+| 7 | `beatInBar` | u8 | 0-3, steps once per beat; the downbeat is a best guess but the grid is stable (see design.md) |
 | 8 | `confidence` | u8 | 0-255 |
 | 9 | `levelLow/Mid/High` | 3 x u8 | AGC-normalised levels |
 | 12 | `onsetLow/Mid/High` | 3 x u8 | peak onset strength since the previous read (cleared on read) |
@@ -123,6 +123,7 @@ python3 tools/plot.py song.csv --from 110 --to 125   # zoom; windows under 30 s 
   predicts, using `beatCount` / `beatPhase` / `beatInBar` exactly as a host reading the frame would see them: a high, loud click on
   beatInBar 0 and a lower, quieter one on 1-3. Listen to check sync, tempo holds through breakdowns and where the downbeat lands.
 - `--summary` prints: time to first lock, % of time locked, tempo segments (start-end, median BPM; wobbles under 2 s are merged),
+  the number of bar re-alignments (and when, up to 10), the standard deviation of the beat period after the first lock (ms),
   confidence min / median after the first lock, for each onset and level output the % of frames at 255 and the 50th / 95th percentile
   (frames with signal only), and energy min / median / max. Short enough to paste into a chat.
 - `plot.py --from S --to S` zooms into a window. Onsets and levels are thin, semi-transparent lines drawn low, mid, high; in windows

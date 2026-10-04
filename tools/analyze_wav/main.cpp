@@ -11,6 +11,7 @@
 //   ./analyze_wav song.wav --summary --csv song.csv   (both)
 //   python3 tools/plot.py song.csv
 #include <algorithm>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +73,7 @@ std::vector<Segment> tempoSegments(const std::vector<Row> &rows) {
   return out;
 }
 
-void summary(const std::vector<Row> &rows) {
+void summary(const std::vector<Row> &rows, const std::vector<double> &beatTimes, const std::vector<double> &realignTimes) {
   using namespace beatsense;
   if (rows.empty()) {
     printf("no audio\n");
@@ -94,6 +95,30 @@ void summary(const std::vector<Row> &rows) {
   const std::vector<Segment> segs = tempoSegments(rows);
   if (segs.empty()) printf("  none\n");
   for (const Segment &s : segs) printf("  %6.1f - %6.1f  %6.2f\n", s.start, s.end, s.median());
+  // Bar grid: re-alignments after the first choice, and how regular the beat clock is (std dev of the beat period after the first lock)
+  printf("bar re-alignments: %zu", realignTimes.size());
+  if (!realignTimes.empty()) {
+    printf(" (at");
+    for (size_t i = 0; i < realignTimes.size() && i < 10; i++) printf(" %.1f", realignTimes[i]);
+    printf(realignTimes.size() > 10 ? " ... s)" : " s)");
+  }
+  printf("\n");
+  {
+    std::vector<double> per;
+    for (size_t i = 1; i < beatTimes.size(); i++) {
+      if (firstLock >= 0 && beatTimes[i - 1] >= firstLock) per.push_back((beatTimes[i] - beatTimes[i - 1]) * 1000.0);
+    }
+    if (per.size() >= 2) {
+      double mean = 0, var = 0;
+      for (double p : per) mean += p;
+      mean /= (double)per.size();
+      for (double p : per) var += (p - mean) * (p - mean);
+      printf("beat period after first lock: mean %.1f ms, std dev %.2f ms (%zu beats)\n", mean, sqrt(var / (double)(per.size() - 1)),
+             per.size() + 1);
+    } else {
+      printf("beat period after first lock: too few beats\n");
+    }
+  }
   std::vector<double> conf;
   for (const Row &r : rows) {
     if (firstLock >= 0 && r.t >= firstLock) conf.push_back(r.f.confidence);
@@ -184,6 +209,8 @@ int main(int argc, char **argv) {
   const double fs = a.config().sampleRate;
   std::vector<float> clicks = audio.original;
   std::vector<Row> rows;
+  std::vector<double> beatTimes, realignTimes;
+  unsigned prevRealigns = 0;
   uint8_t prevCount = 0;
   bool havePrev = false;
   if (csv) {
@@ -199,16 +226,21 @@ int main(int argc, char **argv) {
               f.beatCount, f.beatInBar, f.confidence, f.levels[0], f.levels[1], f.levels[2], f.energy, f.status);
     }
     if (wantSummary) rows.push_back(Row{t, f});
+    if (a.barRealignments() != prevRealigns) {
+      realignTimes.push_back(t);
+      prevRealigns = a.barRealignments();
+    }
     // A beat the host would see: beatCount advanced, so the beat happened phase * period ago (phase is at the last sample)
-    if (clicksPath && f.bpm > 0 && havePrev && (uint8_t)(f.beatCount - prevCount) == 1) {
+    if (f.bpm > 0 && havePrev && (uint8_t)(f.beatCount - prevCount) == 1) {
       const double ago = f.beatPhase / 65536.0 * 60.0 / f.bpm;
-      addClick(clicks, audio.sourceRate, t - ago, f.beatInBar == 0);
+      beatTimes.push_back(t - ago);
+      if (clicksPath) addClick(clicks, audio.sourceRate, t - ago, f.beatInBar == 0);
     }
     prevCount = f.beatCount;
     havePrev = true;
   }
   if (csv && csv != stdout) fclose(csv);
-  if (wantSummary) summary(rows);
+  if (wantSummary) summary(rows, beatTimes, realignTimes);
   if (clicksPath) {
     for (float &v : clicks) v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
     if (!wav::write16(clicksPath, clicks, audio.sourceRate)) {
