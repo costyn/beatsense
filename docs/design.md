@@ -51,6 +51,22 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    candidate is refined by a parabola through its neighbours. Confidence = raw comb score mapped 0.08 -> 0, 0.40 -> 1.
    A tempo different from the current one must win 3 updates in a row before it replaces it (no octave flip-flop); agreeing candidates
    (within 3%) are blended in with factor 0.3.
+   *Holding the tempo (breakdowns, metrical levels).* Found on a real techno track: when the kick drops out, a 3-against-2 pattern in
+   the remaining percussion (dotted-eighth stabs) scores higher than the real tempo and the output flipped to 140 x 2/3 = 93 BPM for
+   seconds, breaking the phase. Four measures, all in `Config`:
+   (a) *Breakdown detector.* Low-band amplitude averaged over 1 s against its own slow average (12 s; 60 s while in a breakdown, so
+   the kick returning ends it at once and a permanent change ends it by itself after ~40 s). Ratio < 0.4 (-8 dB) enters, > 0.6 leaves,
+   only while there is signal. In a breakdown no tempo change is considered (pending evidence is cleared), the beat clock free-runs
+   on its prediction (no PLL correction from the leftover percussion), and `locked` is held.
+   (b) *Harmonic ratios need evidence.* A candidate at 3:2, 4:3, 5:4 or 5:3 (either way, +-4%) of the current tempo is the same music
+   read at another level, so it must win 32 updates in a row (~8 s), or 12 (~3 s) when the current tempo has no support (raw score
+   < `confLow`) and the candidate is strong (raw >= 0.4). Other changes (e.g. 120 -> 128) and octaves keep the 3-update rule.
+   (c) *Continuity prior.* While a tempo is held, candidates near it or its 2x / 0.5x score up to 25% higher (width 0.03 octave),
+   so a near tie resolves to the established tempo.
+   (d) *Confidence is the support of the reported tempo*: the best raw comb score within +-3% of the current tempo, not of the best
+   candidate. A breakdown or a pending change therefore lowers confidence while `locked` stays on.
+   Test: `test_breakdown_holds_tempo_and_phase` (30 s groove, 8.6 s kickless breakdown with stabs on every third 16th, groove back;
+   140 +-1 throughout, phase within 20 ms within 2 s of the kick returning). It failed before the fix (93.3 BPM).
    *Octaves.* The range is 80-170 BPM, so only 80-85 is ambiguous with double time; the prior settles those. Tempi outside the range are
    folded in: **174 BPM is reported as 87** (beat on every second kick), 60 as 120, 180 as 90. Hosts that want double time can multiply.
 8. **Beat phase.** Every 4 frames: the onset signal is correlated with a pulse train at the current beat period (8 pulses, older ones
@@ -58,7 +74,7 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    The beat clock runs at the tempo estimate and predicts continuously; a first-order PLL moves its phase 10% of the error per
    measurement (about 11 measurements per beat at 120 BPM). Errors above 0.2 beat must persist for 10 measurements
    before the clock snaps; a tempo jump snaps at the next measurement. `beatCount` increments when the clock wraps.
-9. **Confidence + lock.** The raw confidence is smoothed (rise 1 s, fall 1.5 s). Locked turns on at 0.5 and off below 0.25 (hysteresis).
+9. **Confidence + lock.** The raw confidence is smoothed (rise 1 s, fall 1.5 s). Locked turns on at 0.5 and off below 0.25 (hysteresis); a breakdown (stage 7) holds it.
 10. **Energy.** RMS smoothed over 15 s (about 8 bars at 125 BPM) divided by a long-term average (cumulative, then 180 s); output
     `128 + 64 * log2(ratio)`, so 128 = average, 0 / 255 = 4x quieter / louder.
 11. **beatInBar.** For each beat the largest low-band onset from 0.25 beat before to 0.25 beat after is recorded in one of four
@@ -66,6 +82,15 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
     a tempo jump).
 12. **Tap.** `tap()` sets the phase to 0 (a tap is a beat). Two taps 0.35-0.75 s apart also set the tempo (if it differs by more than 3%).
     The autocorrelation overrides it again if the music disagrees for 3 updates.
+
+## Output scaling
+
+The u8 onsets and levels are divided by slow peak followers, so a typical peak lands near 255 by construction (onsets: 6 s release;
+levels: 8 s). Measured on the synthetic groove with `analyze_wav --summary` (frames with signal): 1-3% of frames sit at 255 and the
+95th percentile is 116 (onset_high) or lower for onsets and 214-234 for levels, so there is no saturation in the sense of a pegged
+signal; peaks touching 255 are the intended full-scale hits. Long plots of a real track overplot 86 frames/s into ~1200 px, which
+makes sparse peaks look like a solid band; zoom with `plot.py --from/--to`. No headroom was added; if `--summary` on a real track
+shows a large share of frames at 255, scale the followers (e.g. divide by 1.15 x the peak) instead.
 
 ## Cost
 

@@ -112,8 +112,21 @@ The firmware prints the features as CSV at about 20 Hz over USB serial (`BEATSEN
 g++ -std=c++14 -O2 -Iinclude -Ilib/beatsense/src -Itest/support tools/analyze_wav/main.cpp lib/beatsense/src/beatsense/analyzer.cpp -o analyze_wav
 ./analyze_wav song.wav > song.csv            # per-hop CSV: time, onsets, bpm, phase, confidence, levels, energy, status
 ./analyze_wav song.wav --gain-db -20 > quiet.csv
+./analyze_wav song.wav --summary             # short text report instead of the CSV (see below)
+./analyze_wav song.wav --clicks clicks.wav   # the song with a click on every predicted beat
+./analyze_wav song.wav --summary --csv song.csv   # report on stdout, CSV to a file ("-" = stdout)
 python3 tools/plot.py song.csv [song.png]    # needs matplotlib
+python3 tools/plot.py song.csv --from 110 --to 125   # zoom; windows under 30 s also mark the predicted beats
 ```
+
+- `--clicks out.wav` writes the input (channels averaged, original sample rate, 16-bit) with a short click on each beat the analyzer
+  predicts, using `beatCount` / `beatPhase` / `beatInBar` exactly as a host reading the frame would see them: a high, loud click on
+  beatInBar 0 and a lower, quieter one on 1-3. Listen to check sync, tempo holds through breakdowns and where the downbeat lands.
+- `--summary` prints: time to first lock, % of time locked, tempo segments (start-end, median BPM; wobbles under 2 s are merged),
+  confidence min / median after the first lock, for each onset and level output the % of frames at 255 and the 50th / 95th percentile
+  (frames with signal only), and energy min / median / max. Short enough to paste into a chat.
+- `plot.py --from S --to S` zooms into a window. Onsets and levels are thin, semi-transparent lines drawn low, mid, high; in windows
+  under 30 s the predicted beats (where `beat_phase` wraps) are vertical lines in every panel.
 
 WAV input: 22050 Hz (used as is) or 44100 Hz (decimated by 2), 16/24/32-bit PCM or 32-bit float, mono or stereo (averaged).
 Convert anything else: `ffmpeg -i song.mp3 -ac 1 -ar 22050 song.wav`. Put recordings in `test/audio/` (git-ignored).

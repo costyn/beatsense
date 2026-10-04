@@ -17,7 +17,8 @@
 namespace wav {
 
 struct Audio {
-  std::vector<float> mono; // at 22050 Hz, [-1, 1]
+  std::vector<float> mono;     // at 22050 Hz, [-1, 1]
+  std::vector<float> original; // channels averaged, at the file's own rate (sourceRate), for tools that write audio back
   uint32_t sourceRate = 0;
   uint16_t channels = 0;
 };
@@ -111,6 +112,7 @@ inline std::string read(const char *path, Audio &out) {
   }
   out.sourceRate = rate;
   out.channels = ch;
+  out.original = mono;
   out.mono = rate == 44100 ? decimateBy2(mono) : mono;
   return "";
 }
