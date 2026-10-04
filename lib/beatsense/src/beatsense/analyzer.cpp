@@ -52,6 +52,9 @@ Analyzer::Analyzer(const Config &cfg) : cfg_(cfg) {
   energyShortAlpha_ = alphaFor(cfg_.energyShortS, hopS);
   confRiseAlpha_ = alphaFor(cfg_.confRiseS, hopS);
   confFallAlpha_ = alphaFor(cfg_.confFallS, hopS);
+  bdShortAlpha_ = alphaFor(cfg_.breakdownShortS, hopS);
+  bdLongAlpha_ = alphaFor(cfg_.breakdownLongS, hopS);
+  bdHeldAlpha_ = alphaFor(cfg_.breakdownHeldLongS, hopS);
   setAgcMode(cfg_.agcMode);
   const float floorAmp = powf(10.0f, cfg_.agcFloorDb / 20.0f);
   for (size_t g = 0; g < Config::kGroups; g++) {
@@ -130,6 +133,25 @@ void Analyzer::updateLevels(const float groupAmp[3]) {
   }
 }
 
+// Breakdown = the low band (kick) is well below its recent average while there is still signal. The slow average barely moves during
+// a breakdown, so the kick returning ends it at once; after a permanent change it catches up and the breakdown ends by itself.
+void Analyzer::updateBreakdown(float lowAmp) {
+  if (!signal_) {
+    breakdown_ = false;
+    lowShort_ = lowLong_ = 0;
+    return;
+  }
+  if (lowLong_ <= 0) {
+    lowShort_ = lowLong_ = lowAmp;
+    return;
+  }
+  lowShort_ += bdShortAlpha_ * (lowAmp - lowShort_);
+  lowLong_ += (breakdown_ ? bdHeldAlpha_ : bdLongAlpha_) * (lowAmp - lowLong_);
+  const float ratio = lowShort_ / fmaxf(lowLong_, 1e-9f);
+  if (!breakdown_ && ratio < cfg_.breakdownEnter) breakdown_ = true;
+  else if (breakdown_ && ratio > cfg_.breakdownExit) breakdown_ = false;
+}
+
 void Analyzer::processFrame() {
   frame_++;
   const float hopS = (float)Config::kHop / cfg_.sampleRate;
@@ -167,6 +189,7 @@ void Analyzer::processFrame() {
   float groupAmp[3];
   for (size_t g = 0; g < Config::kGroups; g++) groupAmp[g] = sqrtf(groupPow[g]);
   updateLevels(groupAmp);
+  updateBreakdown(groupAmp[0]);
 
   // --- Onset strength: log-compressed spectral flux per group ---
   float odf = 0;
@@ -219,9 +242,9 @@ void Analyzer::processFrame() {
     const float target = signal_ ? confTarget_ : 0.0f;
     confSm_ += (target > confSm_ ? confRiseAlpha_ : confFallAlpha_) * (target - confSm_);
     if (!locked_ && confSm_ > cfg_.lockOn && haveTempo_) locked_ = true;
-    else if (locked_ && (confSm_ < cfg_.lockOff || !haveTempo_)) locked_ = false;
+    else if (locked_ && ((confSm_ < cfg_.lockOff && !breakdown_) || !haveTempo_)) locked_ = false; // a breakdown keeps the lock
   }
-  if (haveTempo_ && frame_ % cfg_.phaseEveryFrames == 0) measurePhase();
+  if (haveTempo_ && !breakdown_ && frame_ % cfg_.phaseEveryFrames == 0) measurePhase(); // breakdown: free-run on prediction
 
   // --- Bar position: strength of the low-band onset around each beat ---
   if (haveTempo_) {
@@ -244,8 +267,8 @@ float Analyzer::odfAt(float age) const {
 
 // Autocorrelation of the onset signal over the last ~6 s, scored by a comb over 1-4 beat lags at fine BPM steps (the comb gives
 // 4x the resolution of the single-lag peak), weighted by the octave prior, then parabolic interpolation of the best candidate.
-void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore) {
-  bpm = score = rawScore = 0;
+void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore, float &currentRaw) {
+  bpm = score = rawScore = currentRaw = 0;
   const size_t n = frame_ < kOdfLen ? (size_t)frame_ : kOdfLen;
   for (size_t i = 0; i < n; i++) lin_[i] = odf_[(odfHead_ + kOdfLen - (n - 1 - i)) % kOdfLen]; // oldest first
   float mean = 0;
@@ -295,7 +318,8 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore) {
     s = w > 0 ? s / wsum : 0.0f; // missing terms count as zero, which favours tempi whose lags fit the window
     scan_[i] = s;
     const float oct = log2f(b / cfg_.bpmPrior) / cfg_.bpmPriorSigmaOct;
-    const float ws = s * expf(-0.5f * oct * oct);
+    float ws = s * expf(-0.5f * oct * oct);
+    if (haveTempo_) ws *= continuityGain(b);
     if (ws > bestW) {
       bestW = ws;
       best = i;
@@ -306,7 +330,9 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore) {
   if (best > 0 && best + 1 < count) {
     auto weighted = [&](size_t i) {
       const float o = log2f((cfg_.bpmMin + (float)i * kScanStepBpm) / cfg_.bpmPrior) / cfg_.bpmPriorSigmaOct;
-      return scan_[i] * expf(-0.5f * o * o);
+      float g = scan_[i] * expf(-0.5f * o * o);
+      if (haveTempo_) g *= continuityGain(cfg_.bpmMin + (float)i * kScanStepBpm);
+      return g;
     };
     const float a = weighted(best - 1), b = weighted(best), c = weighted(best + 1);
     const float den = a - 2.0f * b + c;
@@ -315,6 +341,34 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore) {
   bpm = cfg_.bpmMin + ((float)best + delta) * kScanStepBpm;
   score = bestW;
   rawScore = scan_[best];
+  if (haveTempo_) { // support of the current tempo: best raw score within the agreement window
+    for (size_t i = 0; i < count; i++) {
+      const float b = cfg_.bpmMin + (float)i * kScanStepBpm;
+      if (fabsf(b - bpmAuto_) <= cfg_.tempoAgreeFraction * bpmAuto_ && scan_[i] > currentRaw) currentRaw = scan_[i];
+    }
+  }
+}
+
+// Continuity prior: tempi at the current one, or an octave away, score a bit higher than unrelated ones
+float Analyzer::continuityGain(float bpm) const {
+  const float d = log2f(bpm / bpmAuto_);
+  float g = 0;
+  for (int k = -1; k <= 1; k++) {
+    const float x = (d - (float)k) / cfg_.continuitySigmaOct;
+    const float v = expf(-0.5f * x * x);
+    if (v > g) g = v;
+  }
+  return 1.0f + cfg_.continuityBoost * g;
+}
+
+// Candidate at a simple non-octave ratio to the current tempo: 3:2, 4:3, 5:4, 5:3 (either way)
+bool Analyzer::isHarmonicRatio(float cand, float cur) const {
+  const float r = cand > cur ? cand / cur : cur / cand;
+  static const float kRatios[] = {1.5f, 4.0f / 3.0f, 1.25f, 5.0f / 3.0f};
+  for (float k : kRatios) {
+    if (fabsf(r - k) < cfg_.tempoHarmonicTol * k) return true;
+  }
+  return false;
 }
 
 void Analyzer::setTempo(float bpm) {
@@ -328,16 +382,24 @@ void Analyzer::updateTempo() {
     confTarget_ = 0;
     return;
   }
-  float cand, score, raw;
-  estimateTempo(cand, score, raw);
-  confTarget_ = clampf((raw - cfg_.confLow) / (cfg_.confHigh - cfg_.confLow), 0.0f, 1.0f);
-  if (cand <= 0 || confTarget_ < cfg_.tempoAcceptConf) return;
+  float cand, score, raw, curRaw;
+  estimateTempo(cand, score, raw, curRaw);
+  // Confidence is the evidence for the tempo we report: the current tempo's support if there is one (a breakdown or a pending change
+  // lowers it), otherwise the best candidate's
+  const float evidence = haveTempo_ ? curRaw : raw;
+  confTarget_ = clampf((evidence - cfg_.confLow) / (cfg_.confHigh - cfg_.confLow), 0.0f, 1.0f);
+  const float candConf = clampf((raw - cfg_.confLow) / (cfg_.confHigh - cfg_.confLow), 0.0f, 1.0f);
+  if (cand <= 0 || candConf < cfg_.tempoAcceptConf) return;
   if (!haveTempo_) {
     setTempo(cand);
     return;
   }
   if (fabsf(cand - bpmAuto_) < cfg_.tempoAgreeFraction * bpmAuto_) {
     bpmAuto_ += cfg_.tempoSmoothing * (cand - bpmAuto_);
+    pendingCount_ = 0;
+    return;
+  }
+  if (breakdown_) { // the kick is gone: whatever the rest of the percussion says is not a new tempo
     pendingCount_ = 0;
     return;
   }
@@ -349,7 +411,12 @@ void Analyzer::updateTempo() {
     pendingBpm_ = cand;
     pendingCount_ = 1;
   }
-  if (pendingCount_ >= cfg_.tempoJumpCount) {
+  uint8_t need = cfg_.tempoJumpCount;
+  if (isHarmonicRatio(pendingBpm_, bpmAuto_)) {
+    need = cfg_.tempoHarmonicJumpCount;
+    if (curRaw < cfg_.confLow && raw >= cfg_.tempoStrongRaw) need = cfg_.tempoUnsupportedJumpCount;
+  }
+  if (pendingCount_ >= need) {
     setTempo(pendingBpm_);
     for (int i = 0; i < 4; i++) barStrength_[i] = 0; // the bar grid belongs to the old tempo
     snapCount_ = cfg_.pllSnapCount; // the phase is meaningless at the new tempo: re-measure and snap on the next chance

@@ -89,6 +89,21 @@ struct Config {
   float tempoSmoothing = 0.3f;   // tempo estimate follows agreeing candidates by this fraction per update
   float tempoAgreeFraction = 0.03f; // candidates within this fraction of the current tempo are "the same"
   uint8_t tempoJumpCount = 3;    // a different tempo must win this many updates in a row before it replaces the current one
+  // Metrical-level errors: a candidate at a simple non-octave ratio to the current tempo (3:2, 4:3, 5:4, 5:3 either way) is usually the
+  // same music read at another level (a 3-against-2 pattern), not a new tempo, so it needs far more evidence.
+  uint8_t tempoHarmonicJumpCount = 32;    // ...this many updates in a row (~8 s), or
+  uint8_t tempoUnsupportedJumpCount = 12; // ...this many (~3 s) if the current tempo has lost its support (raw score < confLow) and the
+  float tempoStrongRaw = 0.40f;           // candidate is strong (raw score >= this)
+  float tempoHarmonicTol = 0.04f;         // ratio tolerance for the simple ratios above
+  float continuityBoost = 0.25f;          // candidates at the current tempo (and its 2x / 0.5x) score up to this much higher...
+  float continuitySigmaOct = 0.03f;       // ...falling off with this width (octaves) around them
+  // Breakdown: the low band is well below its recent average (the kick dropped out). Tempo changes are not considered, the beat clock
+  // free-runs, and `locked` is held, so a pattern in the remaining percussion cannot take over.
+  float breakdownShortS = 1.0f;     // low-band amplitude average
+  float breakdownLongS = 12.0f;     // ...against its slow average (outside a breakdown)
+  float breakdownHeldLongS = 60.0f; // slow average time constant inside a breakdown, so a permanent change ends it after ~40 s
+  float breakdownEnter = 0.4f;      // short / long amplitude ratio below which a breakdown starts (-8 dB)
+  float breakdownExit = 0.6f;       // ...and above which it ends
 
   // --- Beat phase ---
   uint16_t phaseEveryFrames = 4; // measurement + PLL correction cadence (~46 ms)
@@ -143,7 +158,10 @@ private:
   void updateSignal(float rmsDb);
   void updateLevels(const float groupAmp[3]);
   void updateTempo();
-  void estimateTempo(float &bpm, float &score, float &rawScore);
+  void estimateTempo(float &bpm, float &score, float &rawScore, float &currentRaw);
+  void updateBreakdown(float lowAmp);
+  float continuityGain(float bpm) const;
+  bool isHarmonicRatio(float cand, float cur) const;
   void measurePhase();
   void commitBeat();
   void advanceClock();
@@ -200,6 +218,8 @@ private:
   float confTarget_ = 0;
   float confSm_ = 0;
   bool locked_ = false;
+  bool breakdown_ = false;
+  float lowShort_ = 0, lowLong_ = 0;
 
   // Beat clock (phase in beats, position within the current beat)
   float phase_ = 0;
@@ -219,7 +239,7 @@ private:
   Features out_;
 
   // Derived time constants (per hop)
-  float levelDecay_, agcAttack_, agcDecay_, fluxMeanAlpha_, onsetPeakDecay_, energyShortAlpha_, confRiseAlpha_, confFallAlpha_;
+  float levelDecay_, agcAttack_, agcDecay_, fluxMeanAlpha_, onsetPeakDecay_, energyShortAlpha_, confRiseAlpha_, confFallAlpha_, bdShortAlpha_, bdLongAlpha_, bdHeldAlpha_;
 };
 
 // Frame as sent over I2C
