@@ -312,7 +312,12 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore, float &c
       if (l >= (float)maxLag) continue;
       const size_t li = (size_t)l;
       const float f = l - (float)li;
-      s += cfg_.combWeights[m - 1] * (rn_[li] + f * (rn_[li + 1] - rn_[li]));
+      // Catmull-Rom cubic through the 4 nearest lags. Linear interpolation of a peak that is only 3-4 samples wide has its maximum
+      // at the integer lags, and all four comb terms round the same way (37 frames/beat for 36.9 = 139.68 BPM): a bias of up to
+      // half a frame per beat (-0.17% at 140 BPM). The cubic follows the peak shape between the samples.
+      const float y0 = rn_[li - 1], y1 = rn_[li], y2 = rn_[li + 1], y3 = rn_[li + 2];
+      const float v = y1 + 0.5f * f * (y2 - y0 + f * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + f * (3.0f * (y1 - y2) + y3 - y0)));
+      s += cfg_.combWeights[m - 1] * v;
       w += cfg_.combWeights[m - 1];
     }
     s = w > 0 ? s / wsum : 0.0f; // missing terms count as zero, which favours tempi whose lags fit the window
@@ -325,19 +330,21 @@ void Analyzer::estimateTempo(float &bpm, float &score, float &rawScore, float &c
       best = i;
     }
   }
-  // Parabolic interpolation on the prior-weighted scores around the best candidate
+  // Parabolic interpolation on the RAW comb scores around the best candidate. The octave prior and the continuity gain slope across
+  // the peak (the prior falls ~1% per 1% of tempo at 140 BPM), so interpolating the weighted scores pulled the estimate towards the
+  // prior centre (-0.17% at 140). The prior only picks the peak; the position within it comes from the raw scores. The raw maximum
+  // within +-3 steps of the picked index is used, since the weights may have picked a shoulder of the same peak.
+  size_t peak = best;
+  for (size_t i = (best >= 3 ? best - 3 : 0); i <= best + 3 && i < count; i++) {
+    if (scan_[i] > scan_[peak]) peak = i;
+  }
   float delta = 0;
-  if (best > 0 && best + 1 < count) {
-    auto weighted = [&](size_t i) {
-      const float o = log2f((cfg_.bpmMin + (float)i * kScanStepBpm) / cfg_.bpmPrior) / cfg_.bpmPriorSigmaOct;
-      float g = scan_[i] * expf(-0.5f * o * o);
-      if (haveTempo_) g *= continuityGain(cfg_.bpmMin + (float)i * kScanStepBpm);
-      return g;
-    };
-    const float a = weighted(best - 1), b = weighted(best), c = weighted(best + 1);
+  if (peak > 0 && peak + 1 < count && scan_[peak - 1] > 1e-6f && scan_[peak + 1] > 1e-6f) { // Gaussian (log-parabola) interpolation
+    const float a = logf(scan_[peak - 1]), b = logf(scan_[peak]), c = logf(scan_[peak + 1]);
     const float den = a - 2.0f * b + c;
     if (den < -1e-9f) delta = clampf(0.5f * (a - c) / den, -1.0f, 1.0f);
   }
+  best = peak;
   bpm = cfg_.bpmMin + ((float)best + delta) * kScanStepBpm;
   score = bestW;
   rawScore = scan_[best];
@@ -373,6 +380,8 @@ bool Analyzer::isHarmonicRatio(float cand, float cur) const {
 
 void Analyzer::setTempo(float bpm) {
   bpmAuto_ = bpm;
+  clockBpm_ = bpm;
+  trimFrames_ = 0;
   haveTempo_ = true;
   pendingCount_ = 0;
 }
@@ -394,12 +403,13 @@ void Analyzer::updateTempo() {
     setTempo(cand);
     return;
   }
-  if (fabsf(cand - bpmAuto_) < cfg_.tempoAgreeFraction * bpmAuto_) {
-    bpmAuto_ += cfg_.tempoSmoothing * (cand - bpmAuto_);
+  if (breakdown_) { // the kick is gone: whatever the rest of the percussion says is neither a new tempo nor a refinement
     pendingCount_ = 0;
     return;
   }
-  if (breakdown_) { // the kick is gone: whatever the rest of the percussion says is not a new tempo
+  if (fabsf(cand - bpmAuto_) < cfg_.tempoAgreeFraction * bpmAuto_) {
+    bpmAuto_ += cfg_.tempoSmoothing * (cand - bpmAuto_);
+    clockBpm_ += cfg_.clockFollow * (bpmAuto_ - clockBpm_); // the clock only leans on the estimate; the PLL decides its tempo
     pendingCount_ = 0;
     return;
   }
@@ -426,6 +436,9 @@ void Analyzer::updateTempo() {
 // Phase: correlate the onset signal with a pulse train at the current beat period (the most recent beats weigh most) to find where
 // the last beat was, then pull the free-running beat clock towards it (PLL). Between measurements the clock predicts.
 void Analyzer::measurePhase() {
+  // Pulse train at the ESTIMATED period, not the clock's: the train's peak is biased by the period error (older pulses drift off the
+  // kicks), and if that depended on the clock's own tempo the integral term below would feed back on itself (positive feedback,
+  // slow runaway at slow tempi). With the estimate the bias is a constant (about 1 ms), which the integral term ignores.
   const float period = 60.0f * frameRate_ / bpmAuto_; // frames per beat
   const size_t slots = (size_t)ceilf(period);
   if (slots > 128) return;
@@ -470,6 +483,17 @@ void Analyzer::measurePhase() {
   } else {
     snapCount_ = 0;
     delta = cfg_.pllGain * err;
+    // Second order: a steady phase error means the beat period is off. Steady state of the first-order loop is err = d / pllGain * (frames
+    // per measurement / period) for a tempo error d, so err * period / phaseEveryFrames estimates d / pllGain; the trim integrates it.
+    // Only while locked: leftover percussion without a lock must not retune the clock.
+    // (The tempo estimate changes clockBpm_ only through clockFollow, so its +-0.1 BPM jitter does not reach the output.)
+    if (locked_) {
+      // Faster for the first seconds after a (re)start, when the estimate it started from is least accurate
+      const float boost = trimFrames_ < (uint32_t)(cfg_.pllTrimBoostS * frameRate_) ? cfg_.pllTrimBoost : 1.0f;
+      trimFrames_ += cfg_.phaseEveryFrames;
+      clockBpm_ *= 1.0f + boost * cfg_.pllTrimGain * clampf(err, -0.1f, 0.1f) * period / (float)cfg_.phaseEveryFrames;
+      clockBpm_ = clampf(clockBpm_, bpmAuto_ * (1.0f - cfg_.pllTrimMax), bpmAuto_ * (1.0f + cfg_.pllTrimMax));
+    }
   }
   phase_ += delta;
   if (phase_ >= 1.0f) {
@@ -484,7 +508,7 @@ void Analyzer::measurePhase() {
 }
 
 void Analyzer::advanceClock() {
-  phase_ += bpmAuto_ / 60.0f / frameRate_;
+  phase_ += clockBpm() / 60.0f / frameRate_;
   while (phase_ >= 1.0f) {
     phase_ -= 1.0f;
     beatCount_++;
@@ -520,12 +544,12 @@ void Analyzer::tap() {
 
 void Analyzer::buildOutput() {
   Features &o = out_;
-  o.bpm = haveTempo_ ? bpmAuto_ : 0.0f;
+  o.bpm = haveTempo_ ? clockBpm() : 0.0f;
   float p = phase_;
   uint8_t count = beatCount_;
   uint32_t idx = beatIdx_;
   if (haveTempo_ && hostLatencyMs_ != 0) {
-    p += (float)hostLatencyMs_ * 0.001f * bpmAuto_ / 60.0f;
+    p += (float)hostLatencyMs_ * 0.001f * clockBpm() / 60.0f;
     const float fl = floorf(p);
     p -= fl;
     count = (uint8_t)(count + (int)fl);

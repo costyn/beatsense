@@ -285,6 +285,46 @@ void test_breakdown_holds_tempo_and_phase() {
   TEST_ASSERT_TRUE_MESSAGE(maxErrAfter <= 20.0, "phase error > 20 ms 2 s after the kick returned");
 }
 
+// The reported tempo converges to the true one: the comb's linear interpolation used to round every lag towards whole frames (140 was
+// reported as 139.76), and a first-order PLL cannot correct a period error that the autocorrelation hides.
+void test_tempo_accuracy_after_15s() {
+  const double bpms[] = {90, 120, 128, 140, 174};
+  for (double bpm : bpms) {
+    synth::Spec sp;
+    sp.bpm = bpm;
+    sp.seconds = 25;
+    Analyzer a;
+    double worst = 0;
+    const double truth = expectedBpm(bpm > 170 ? bpm / 2 : bpm);
+    synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+      if (t >= 15.0) worst = fmax(worst, fabs(an.features().bpm - truth));
+    });
+    char msg[80];
+    snprintf(msg, sizeof msg, "tempo %.0f: worst error after 15 s %.3f BPM", bpm, worst);
+    printf("    %s\n", msg);
+    TEST_ASSERT_TRUE_MESSAGE(worst <= 0.05, msg);
+  }
+}
+
+// During a breakdown the clock free-runs on its tempo: a 0.17% tempo error (139.76 for 140) is 14 ms over 8 s
+void test_free_running_drift_over_breakdown() {
+  synth::Spec sp;
+  sp.bpm = 140;
+  sp.seconds = 44;
+  sp.breakFromS = 0.2 + 70 * 60.0 / 140; // 30.2 s
+  sp.breakToS = sp.breakFromS + 10.0;    // no kick for 10 s, hats at half level
+  Analyzer a;
+  double before = 0, after = 0;
+  synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+    if (t >= sp.breakFromS - 0.05 && before == 0) before = beatErrorMs(an.features(), t, sp);
+    if (t >= sp.breakToS - 0.05 && after == 0) after = beatErrorMs(an.features(), t, sp);
+  });
+  char msg[80];
+  snprintf(msg, sizeof msg, "free-running drift over 10 s: %.1f ms (%.1f -> %.1f)", after - before, before, after);
+  printf("    %s\n", msg);
+  TEST_ASSERT_TRUE_MESSAGE(fabs(after - before) <= 5.0, msg);
+}
+
 void test_silence_drops_confidence_and_signal() {
   synth::Spec sp;
   sp.seconds = 12;
@@ -353,6 +393,8 @@ int main() {
   RUN_TEST(test_downbeat_follows_accent);
   RUN_TEST(test_tempo_change_relocks);
   RUN_TEST(test_breakdown_holds_tempo_and_phase);
+  RUN_TEST(test_tempo_accuracy_after_15s);
+  RUN_TEST(test_free_running_drift_over_breakdown);
   RUN_TEST(test_silence_drops_confidence_and_signal);
   RUN_TEST(test_tap_sets_phase_and_tempo);
   RUN_TEST(test_host_latency_offset_shifts_phase);

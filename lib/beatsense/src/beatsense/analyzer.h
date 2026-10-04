@@ -112,6 +112,11 @@ struct Config {
   float pllGain = 0.10f;         // fraction of the phase error corrected per measurement
   float pllSnapError = 0.2f;     // |error| in beats beyond which...
   uint8_t pllSnapCount = 10;     // ...this many consecutive measurements make the clock snap to the measurement
+  float pllTrimGain = 0.0003f;   // second-order term: integrates the phase error into a fractional correction of the beat period
+  float pllTrimMax = 0.02f;      // ...limited to +-2% of the tempo estimate
+  float pllTrimBoost = 2.0f;     // ...times this for the first pllTrimBoostS seconds locked after a new tempo
+  float pllTrimBoostS = 12.0f;
+  float clockFollow = 0.005f;     // per tempo update (0.25 s): how far the clock tempo moves towards the autocorrelation estimate
   // Time from a sound's attack until the onset peaks at the end of the frame that detects it. Measured with the synthetic kick in
   // test_tempo (see docs/design.md); beat phase is reported relative to the attack. Mostly (hop / 2 + window attack time).
   float onsetLatencySamples = 200.0f;
@@ -168,6 +173,7 @@ private:
   void buildOutput();
   float odfAt(float age) const;
   void setTempo(float bpm);
+  float clockBpm() const { return clockBpm_; } // the beat clock's tempo (reported): the estimate, refined by the PLL
 
   Config cfg_;
   BEATSENSE_FFT_CLASS fft_;
@@ -213,6 +219,8 @@ private:
   float scan_[400];
   bool haveTempo_ = false;
   float bpmAuto_ = 0;
+  uint32_t trimFrames_ = 0; // frames of integral action since the last setTempo()
+  float clockBpm_ = 0; // tempo the beat clock runs at: follows bpmAuto_ slowly, trimmed by the PLL's integral term
   float pendingBpm_ = 0;
   uint8_t pendingCount_ = 0;
   float confTarget_ = 0;
