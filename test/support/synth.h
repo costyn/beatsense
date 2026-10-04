@@ -35,6 +35,11 @@ struct Spec {
   double gainDb = 0;          // applied to everything, noise included
   bool hats = true;           // off-beat hats at 8ths
   uint32_t seed = 1;
+  // Breakdown: in [breakFromS, breakToS) the kick and snare are dropped and the hats are halved. A synth stab (mid band) on every third
+  // 16th note (a dotted eighth, 3:2 against the beat) plays instead, aligned to breakFromS. 0 stabAmp = none.
+  double breakFromS = 0;
+  double breakToS = 0;
+  double stabAmp = 0;
 };
 
 inline double beatTime(const Spec &s, int n) { return s.startS + n * 60.0 / s.bpm; }
@@ -49,9 +54,10 @@ inline std::vector<float> render(const Spec &sp) {
   const int beats = (int)((sp.seconds - sp.startS) / beat) + 1;
   for (int b = 0; b < beats; b++) {
     const double t0 = sp.startS + b * beat;
+    const bool brk = t0 >= sp.breakFromS - 1e-9 && t0 < sp.breakToS - 1e-9;
     // kick
     double ph = 0;
-    for (size_t i = (size_t)(t0 * kFs); i < n && i < (size_t)((t0 + 0.4) * kFs); i++) {
+    for (size_t i = (size_t)(t0 * kFs); !brk && i < n && i < (size_t)((t0 + 0.4) * kFs); i++) {
       const double t = i / kFs - t0;
       if (t < 0) continue;
       ph += 2.0 * M_PI * (55.0 + 65.0 * exp(-t / 0.03)) / kFs;
@@ -64,15 +70,29 @@ inline std::vector<float> render(const Spec &sp) {
         const double t = i / kFs - th;
         if (t < 0) continue;
         const double w = rng.uniform();
-        x[i] += (float)(sp.hatAmp * exp(-t / 0.02) * (w - prev)); // first difference = high-passed noise
+        x[i] += (float)(sp.hatAmp * (brk ? 0.5 : 1.0) * exp(-t / 0.02) * (w - prev)); // first difference = high-passed noise
         prev = w;
       }
     }
-    if (sp.snareAmp > 0 && (b & 1)) {
+    if (sp.snareAmp > 0 && (b & 1) && !brk) {
       for (size_t i = (size_t)(t0 * kFs); i < n && i < (size_t)((t0 + 0.25) * kFs); i++) {
         const double t = i / kFs - t0;
         if (t < 0) continue;
         x[i] += (float)(sp.snareAmp * exp(-t / 0.05) * (0.7 * rng.uniform() + 0.5 * sin(2 * M_PI * 190 * t)));
+      }
+    }
+  }
+  if (sp.stabAmp > 0) {
+    // Stab: 1.3 kHz + 2.1 kHz partials, noise click, 40 ms decay; separate RNG so the rest of the signal is unchanged
+    Rng sr(sp.seed + 77);
+    const double step = beat / 4.0 * 3.0;
+    for (int k = 0;; k++) {
+      const double t0 = sp.breakFromS + k * step;
+      if (t0 >= sp.breakToS || t0 >= sp.seconds) break;
+      for (size_t i = (size_t)(t0 * kFs); i < n && i < (size_t)((t0 + 0.25) * kFs); i++) {
+        const double t = i / kFs - t0;
+        if (t < 0) continue;
+        x[i] += (float)(sp.stabAmp * exp(-t / 0.04) * (0.6 * sin(2 * M_PI * 1300 * t) + 0.3 * sin(2 * M_PI * 2100 * t) + 0.3 * sr.uniform()));
       }
     }
   }

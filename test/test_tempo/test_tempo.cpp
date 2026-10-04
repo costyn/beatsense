@@ -253,6 +253,38 @@ void test_tempo_change_relocks() {
   TEST_ASSERT_FLOAT_WITHIN(1.0f, 128.0f, a.features().bpm);
 }
 
+// A breakdown without the kick, where the remaining percussion is a strong 3:2 pattern (stab on every third 16th = 93.3 BPM
+// when read as a beat). The established 140 must be held, and the clock must still be on the kicks when the groove returns.
+void test_breakdown_holds_tempo_and_phase() {
+  synth::Spec sp;
+  sp.bpm = 140;
+  sp.seconds = 52;
+  sp.noiseRms = 0.005;
+  sp.snareAmp = 0.25;
+  sp.breakFromS = 0.2 + 70 * 60.0 / 140; // beat 70 = 30.2 s, so the stabs start on a beat
+  sp.breakToS = 0.2 + 90 * 60.0 / 140;   // 8.6 s breakdown, kicks back on a beat
+  sp.stabAmp = 0.35;
+  Analyzer a;
+  double minB = 1e9, maxB = 0, recoverAt = -1, maxErrAfter = 0, lockedNum = 0, lockedDen = 0;
+  synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+    const Features &f = an.features();
+    if (t >= sp.breakFromS && t < sp.breakToS + 0.5) {
+      minB = fmin(minB, f.bpm);
+      maxB = fmax(maxB, f.bpm);
+    }
+    if (t >= sp.breakFromS && t < sp.breakToS) {
+      lockedDen++;
+      if (f.status & proto::kStatusLocked) lockedNum++;
+    }
+    if (t >= sp.breakToS + 2.0) maxErrAfter = fmax(maxErrAfter, fabs(beatErrorMs(f, t, sp)));
+    if (t >= sp.breakToS && recoverAt < 0 && fabs(beatErrorMs(f, t, sp)) <= 20.0) recoverAt = t - sp.breakToS;
+  });
+  printf("    breakdown bpm %.2f..%.2f, locked %.0f%%, phase ok %.2f s after the kick returns, max error after 2 s: %.1f ms\n", minB, maxB,
+         100.0 * lockedNum / lockedDen, recoverAt, maxErrAfter);
+  TEST_ASSERT_TRUE_MESSAGE(minB > 139.0 && maxB < 141.0, "tempo left 140 BPM during the breakdown");
+  TEST_ASSERT_TRUE_MESSAGE(maxErrAfter <= 20.0, "phase error > 20 ms 2 s after the kick returned");
+}
+
 void test_silence_drops_confidence_and_signal() {
   synth::Spec sp;
   sp.seconds = 12;
@@ -320,6 +352,7 @@ int main() {
   RUN_TEST(test_beat_in_bar_is_stable_and_cycles);
   RUN_TEST(test_downbeat_follows_accent);
   RUN_TEST(test_tempo_change_relocks);
+  RUN_TEST(test_breakdown_holds_tempo_and_phase);
   RUN_TEST(test_silence_drops_confidence_and_signal);
   RUN_TEST(test_tap_sets_phase_and_tempo);
   RUN_TEST(test_host_latency_offset_shifts_phase);
