@@ -10,7 +10,7 @@
 
 // --- INMP441 (I2S RX, left channel: L/R pin tied to GND) ---
 constexpr int PIN_I2S_SCK = 5; // bit clock (INMP441 SCK)
-constexpr int PIN_I2S_WS = 6;  // word select (INMP441 WS)
+constexpr int PIN_I2S_WS = 3;  // word select (INMP441 WS)
 constexpr int PIN_I2S_SD = 7;  // data in (INMP441 SD)
 
 // --- I2C slave towards the LED controller (host). 4.7k pull-ups to this board's 3V3 are on the daughterboard. ---
