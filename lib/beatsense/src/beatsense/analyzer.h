@@ -55,7 +55,12 @@ struct Config {
   float onsetMeanTauS = 0.6f;    // slow mean subtracted from the flux (adaptive threshold)
   float tempoWeight[3] = {1.0f, 0.6f, 0.0f}; // how much each group's onsets feed tempo/phase estimation (hats off: they tick at 8ths/16ths)
   float onsetPeakReleaseS = 6.0f; // onset output is normalised by a slow peak follower
-  float onsetPeakFloor = 1.0f;    // ...but never by less than this much flux (nepers), so noise doesn't fill the range
+  float onsetPeakFloor = 1.0f;    // ...but never by less than this much flux (nepers), so noise doesn't fill the range. Used by the
+                                  // bar accent (relative to a group's own peak); the u8 output has its own, lower floors:
+  float onsetOutFloor[3] = {0.5f, 0.2f, 0.04f}; // per group (low / mid / high), nepers. A mic in a room sees the hats at only ~0.06-0.08
+                                  // nepers of flux (the bands sit near -60 dBFS, in the linear part of ln(1 + logGain * x)), so a floor of
+                                  // 1.0 pinned the divisor and the output at 14-21. In that linear part flux is proportional to
+                                  // amplitude, so the floor is also an amplitude threshold: room noise stays well below it.
 
   // --- Noise gate / signal present ---
   float gateDb = -66.0f;         // RMS in dBFS (sine-referenced); host-adjustable
@@ -214,7 +219,8 @@ private:
   float flux_[Config::kGroups] = {0};     // mean positive log-increase of the group's bands (nepers)
   float fluxMean_[Config::kGroups] = {0}; // slow mean of the flux
   float onsetCur_[Config::kGroups] = {0}; // flux above its mean (>= 0), this hop
-  float onsetPeak_[Config::kGroups];      // slow peak follower used to scale the u8 onset output
+  float onsetPeak_[Config::kGroups];      // slow peak follower (floor onsetPeakFloor) used by the bar accent
+  float onsetOutPeak_[Config::kGroups];   // slow peak follower (floor onsetOutFloor[g]) that scales the u8 onset output
   uint8_t onsetHold_[Config::kGroups] = {0};
 
   // Signal, clipping, levels

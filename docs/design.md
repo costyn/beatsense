@@ -36,8 +36,10 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
 4. **Onset strength.** `L = ln(1 + 1000 * bandRms)`; flux = sum of positive `L[t] - L[t-1]` over a group's bands, divided by the number
    of bands. The log makes onsets independent of gain (`ln(gA) - ln(gB) = ln(A/B)`); the constant 1000 means bands below about -60 dBFS
    barely move, which doubles as a soft noise gate. A slow mean (0.6 s) is subtracted and the result half-wave rectified, so steady
-   texture does not count. The u8 `onsets` are that value divided by a slow peak follower (6 s release, floor 1.0 nepers so noise
-   cannot fill the range), peak-held between I2C reads.
+   texture does not count. The u8 `onsets` are that value divided by a slow peak follower (6 s release, per-group floor
+   `onsetOutFloor` = 0.5 / 0.2 / 0.04 nepers for low / mid / high, so noise cannot fill the range; see "Output scaling"), peak-held
+   between I2C reads. The bar accent (stage 11) and the tempo/phase input are not affected: they use the raw onset and a separate
+   follower with the 1.0 floor (`onsetPeakFloor`).
 5. **Signal gate.** Frame RMS in dBFS (sine-referenced) against `gateDb` = -66 dBFS (INMP441 noise floor is about -87). On at gate + 4 dB,
    off after 0.6 s below gate. Without signal: levels and onsets are 0 and confidence decays.
 6. **Levels + AGC.** Group amplitude, VU-smoothed (instant attack, 120 ms release), divided by a per-group peak follower (attack 10 ms,
@@ -114,6 +116,24 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
     The autocorrelation overrides it again if the music disagrees for 3 updates.
 
 ## Output scaling
+
+**Onsets on a quiet (microphone) signal.** The original single floor of 1.0 nepers was tuned on line-level WAVs. Through a room
+microphone (techno at 138 BPM, locked) the per-second maxima on the lamp were high 14-21, mid 52-82, low 46-152: the real hats move the
+high bands by only ~0.06-0.08 nepers, because bands near -60 dBFS sit in the linear part of `ln(1 + 1000 x)` (flux is then proportional
+to amplitude), so the floor, not the peak follower, set the divisor and the output never got near 255. Fix: the u8 output has its own
+follower with a per-group floor (`Config::onsetOutFloor` = 0.5 / 0.2 / 0.04). The floor is deliberately not zero: in the linear regime
+it is an amplitude threshold, which is what keeps noise from being scaled up. `logGain` is unchanged (it would change the raw flux and
+with it tempo, phase and the noise rejection), and so is the follower behind the bar accent (`onsetPeakFloor` 1.0): the accent
+compares a group with its own peak and its behaviour is the same as before. Reasons for the values, measured on the synthetic groove
+(138 BPM) attenuated by 25-35 dB with an INMP441-like noise floor (-87 dBFS), and on noise alone:
+- high 0.04: the quietest hats of the test still reach 255 with margin; white noise at -64 / -60 / -55 dBFS (above the gate) gives
+  at most 86 / 132 / 219, i.e. no 160 trigger at -64 and -60. A floor of 0.03 or lower started to trigger on -55 dBFS hiss.
+- mid 0.2, low 0.5: room rumble and a loud steady tone (`test_onsets_fire_on_kicks_not_on_steady_tone`: leakage ripple of 0.02 nepers
+  in the low band, 8 of 255) stay low; real kicks are 0.2-0.6 nepers on the lamp.
+- Gate hit counts (>= 160 trigger, < 80 re-arm) on the attenuated synthetic hats: 44-50 triggers for 50 hats. Some hats stay below 160
+  because an attack that straddles two hops splits its flux (this is the same on line-level audio).
+- Limit: a flux of 0.04 nepers cannot be told from noise by size alone. Noise at -45 dBFS white (far above any room) does fill the range
+  of the high band. Tests: `test_quiet_mic_onsets_span_the_range`, `test_noise_above_gate_does_not_fill_the_range`.
 
 The u8 onsets are divided by slow peak followers (6 s release), so a typical peak lands near 255 by construction; on a real techno
 track 1-1.5% of the frames are at 255 and the 95th percentile is 87-126, which is fine. The levels are divided by **1.15 x** their
