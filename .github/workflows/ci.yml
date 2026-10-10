@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio
+      - name: Native unit tests
+        run: pio test -e native
+      - name: Build firmware (StampS3)
+        run: pio run -e stamps3
+      - name: Build analyze_wav tool
+        run: g++ -std=c++14 -O2 -Wall -Wextra -Iinclude -Ilib/beatsense/src -Itest/support tools/analyze_wav/main.cpp lib/beatsense/src/beatsense/analyzer.cpp -o analyze_wav
