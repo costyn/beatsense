@@ -6,6 +6,20 @@ The analysis is a portable C++ library with no Arduino dependency, so it is unit
 
 State, not events: the host polls a 17-byte frame and gets the beat phase *as of the moment of the read*, so the poll rate only affects smoothness.
 
+## Status (2026-10-10)
+
+- **Works on real hardware**: StampS3 + INMP441 prototype connected to a Lumifera v0.5 over I2C (60 frames/s, no CRC errors).
+  Locks to psytrance (140-145 BPM) and techno (130-140 BPM) within a few beats; Lumifera's beat sync needs no latency trim.
+  The lock can drop during long breakdowns (accepted).
+- **Not done yet**:
+  - A `breakdown` status bit (bit 3) in the frame: the analyser already detects breakdowns internally; Lumifera wants it for a
+    "breakdown mode" (see Lumifera's `docs/extras/audio-processing-plan.md`, Status section).
+  - Onset *events* (kick/snare/hat flags): the frame carries onset strengths only; the host derives events itself for now.
+  - Config/tap registers (0x10-0x13) exist but no host writes them yet.
+  - `esp-dsp` FFT backend (`BEATSENSE_FFT_CLASS` seam): only if profiling ever shows a need; the own 512-point FFT is cheap.
+  - PCB.
+- Development branch: `claude/adoring-gates-hinwdi` (not merged into `main` yet).
+
 ## Hardware
 
 - M5Stack StampS3 (ESP32-S3FN8, 8 MB flash, no PSRAM). WiFi and Bluetooth are switched off.
