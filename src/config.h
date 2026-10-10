@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Board configuration for the M5Stack StampS3 (ESP32-S3FN8, 8 MB flash, no PSRAM). All pins live here.
 //
-// Avoided: G0 (boot button), G3/G45/G46 (strapping), G19/G20 (USB), G43/G44 (UART0), G21 (internal RGB LED).
+// Avoided: G0 (boot button), G45/G46 (strapping; G3 is a strapping pin too, but only for JTAG source selection, harmless here), G19/G20 (USB), G43/G44 (UART0), G21 (internal RGB LED).
 #ifndef BEATSENSE_CONFIG_H
 #define BEATSENSE_CONFIG_H
 

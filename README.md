@@ -35,7 +35,7 @@ State, not events: the host polls a 17-byte frame and gets the beat phase *as of
  VDD  ----------------- 3V3
  GND  ----------------- GND  ------------------------- GND   (shared!)
  SCK  ----------------- G5                              
- WS   ----------------- G6                  +5V  ------ 5V / VIN pad
+ WS   ----------------- G3                  +5V  ------ 5V / VIN pad
  SD   ----------------- G7
  L/R  ----------------- GND  (left channel)
                         G13 (SDA) ---+-------------- SDA
@@ -51,7 +51,7 @@ State, not events: the host polls a 17-byte frame and gets the beat phase *as of
 | VDD | 3V3 |
 | GND | GND |
 | SCK | G5 |
-| WS | G6 |
+| WS | G3 |
 | SD | G7 |
 | L/R | GND (left channel) |
 
@@ -69,7 +69,7 @@ Host side:
 | **v1 / v1 mini**: I2C connector (Molex 502352-0400) | pin 2 (+5V) | pin 1 | pin 3 = IO2 | pin 4 = IO32 |
 | **v0.5** (ESP32-DevKitC V4, wires soldered to the header) | 5V header pin | GND header pin | IO33 | IO16 (IO17 on a WROOM module; 16/17 are used by PSRAM on WROVER) |
 
-The v1 boards have 47 Ohm series resistors on the data lines. Pins avoided on the StampS3: G0 (boot button), G3/G45/G46 (strapping),
+The v1 boards have 47 Ohm series resistors on the data lines. Pins avoided on the StampS3: G0 (boot button), G45/G46 (strapping),
 G19/G20 (USB), G43/G44 (UART0), G21 (internal RGB LED). All pins are in [`src/config.h`](src/config.h).
 
 Notes:
@@ -79,6 +79,9 @@ Notes:
 - Keep the microphone wires short (under 10 cm). I2S at about 1.4 MHz BCLK is fine on short wires and picks up noise on long ones.
 - On Lumifera v1, SDA is IO2, a strapping pin: unplug the daughterboard when flashing the host over USB (see the Lumifera audio plan).
 - Do not plug 3.3 V-only Qwiic/STEMMA modules into the Lumifera connector (it carries 5 V).
+
+WS is on G3, a strapping pin (JTAG source select). It only matters with a specific eFuse setting, so it's fine on a stock StampS3;
+the prototype uses it.
 
 ## I2C protocol (version 1)
 
