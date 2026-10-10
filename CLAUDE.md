@@ -32,3 +32,6 @@ CI (`.github/workflows/ci.yml`) runs both on every push and PR. Run the native t
 - Don't add dependencies on esp-dsp or arduinoFFT (GPL). An esp-dsp backend can be swapped in behind `BEATSENSE_FFT_CLASS`.
 - Commits: conventional commits (`feat(dsp):`, `fix(firmware):`, `test:`, `docs:`, `chore:`).
 - The firmware cannot be tested here; it must compile, and hardware behaviour is verified by the user.
+- Keep the architecture clean (portable core / firmware split, `Config` tunables, the protocol). If a request needs a hack or a
+  refactor bigger than the feature, say so before starting. Log shortcuts and structural problems in Lumifera's
+  `docs/todos/tech-debt.md` (shared by both repos) and mention new entries in your reply. Pass this on to subagents.
