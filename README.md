@@ -4,7 +4,7 @@ Firmware and DSP for an audio-analysis daughterboard: an **M5Stack StampS3** (ES
 **tempo, beat phase, band levels, onsets and a slow energy value** over **I2C** to an LED controller (built for Lumifera, usable by any I2C host).
 The analysis is a portable C++ library with no Arduino dependency, so it is unit-tested and tuned on a laptop, with synthetic audio or real WAV files.
 
-State, not events: the host polls a 17-byte frame and gets the beat phase *as of the moment of the read*, so the poll rate only affects smoothness.
+State, not events: the host polls a 17-byte frame and gets the beat phase _as of the moment of the read_, so the poll rate only affects smoothness.
 
 ## Status (2026-10-10)
 
@@ -14,7 +14,7 @@ State, not events: the host polls a 17-byte frame and gets the beat phase *as of
 - **Not done yet**:
   - A `breakdown` status bit (bit 3) in the frame: the analyser already detects breakdowns internally; Lumifera wants it for a
     "breakdown mode" (see Lumifera's `docs/extras/audio-processing-plan.md`, Status section).
-  - Onset *events* (kick/snare/hat flags): the frame carries onset strengths only; the host derives events itself for now.
+  - Onset _events_ (kick/snare/hat flags): the frame carries onset strengths only; the host derives events itself for now.
   - Config/tap registers (0x10-0x13) exist but no host writes them yet.
   - `esp-dsp` FFT backend (`BEATSENSE_FFT_CLASS` seam): only if profiling ever shows a need; the own 512-point FFT is cheap.
   - PCB.
@@ -34,7 +34,7 @@ State, not events: the host polls a 17-byte frame and gets the beat phase *as of
  -------                -------                         ---------------
  VDD  ----------------- 3V3
  GND  ----------------- GND  ------------------------- GND   (shared!)
- SCK  ----------------- G5                              
+ SCK  ----------------- G5
  WS   ----------------- G3                  +5V  ------ 5V / VIN pad
  SD   ----------------- G7
  L/R  ----------------- GND  (left channel)
@@ -46,28 +46,28 @@ State, not events: the host polls a 17-byte frame and gets the beat phase *as of
                                   4.7k to 3V3
 ```
 
-| INMP441 | StampS3 |
-|---|---|
-| VDD | 3V3 |
-| GND | GND |
-| SCK | G5 |
-| WS | G3 |
-| SD | G7 |
-| L/R | GND (left channel) |
+| INMP441 | StampS3            |
+| ------- | ------------------ |
+| VDD     | 3V3                |
+| GND     | GND                |
+| SCK     | G5                 |
+| WS      | G3                 |
+| SD      | G7                 |
+| L/R     | GND (left channel) |
 
-| StampS3 | Host | Notes |
-|---|---|---|
-| G13 | SDA | 4.7 kOhm pull-up to the StampS3 3V3 |
-| G15 | SCL | 4.7 kOhm pull-up to the StampS3 3V3 |
-| 5V / VIN pad | +5 V | |
-| GND | GND | must be shared |
+| StampS3      | Host | Notes                               |
+| ------------ | ---- | ----------------------------------- |
+| G13          | SDA  | 4.7 kOhm pull-up to the StampS3 3V3 |
+| G15          | SCL  | 4.7 kOhm pull-up to the StampS3 3V3 |
+| 5V / VIN pad | +5 V |                                     |
+| GND          | GND  | must be shared                      |
 
 Host side:
 
-| Lumifera board | 5 V | GND | SDA | SCL |
-|---|---|---|---|---|
-| **v1 / v1 mini**: I2C connector (Molex 502352-0400) | pin 2 (+5V) | pin 1 | pin 3 = IO2 | pin 4 = IO32 |
-| **v0.5** (ESP32-DevKitC V4, wires soldered to the header) | 5V header pin | GND header pin | IO33 | IO16 (IO17 on a WROOM module; 16/17 are used by PSRAM on WROVER) |
+| Lumifera board                                            | 5 V           | GND            | SDA         | SCL                                                              |
+| --------------------------------------------------------- | ------------- | -------------- | ----------- | ---------------------------------------------------------------- |
+| **v1 / v1 mini**: I2C connector (Molex 502352-0400)       | pin 2 (+5V)   | pin 1          | pin 3 = IO2 | pin 4 = IO32                                                     |
+| **v0.5** (ESP32-DevKitC V4, wires soldered to the header) | 5V header pin | GND header pin | IO33        | IO16 (IO17 on a WROOM module; 16/17 are used by PSRAM on WROVER) |
 
 The v1 boards have 47 Ohm series resistors on the data lines. Pins avoided on the StampS3: G0 (boot button), G45/G46 (strapping),
 G19/G20 (USB), G43/G44 (UART0), G21 (internal RGB LED). All pins are in [`src/config.h`](src/config.h).
@@ -88,28 +88,28 @@ the prototype uses it.
 Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined in [`include/beatsense_protocol.h`](include/beatsense_protocol.h)
 (MIT licensed, with encode/decode/CRC helpers). **Any read returns this frame from offset 0**; multi-byte fields are little-endian.
 
-| Offset | Field | Type | Meaning |
-|---|---|---|---|
-| 0 | `version` | u8 | protocol version (1) |
-| 1 | `status` | u8 | bit0 signal present, bit1 beat locked, bit2 clipping |
-| 2 | `bpm` | u16 Q8.8 | tempo |
-| 4 | `beatPhase` | u16 | 0-65535 = position within the current beat at the time of the read (0 = the beat) |
-| 6 | `beatCount` | u8 | wraps; increments each beat |
-| 7 | `beatInBar` | u8 | 0-3, steps once per beat; the downbeat is a best guess but the grid is stable (see design.md) |
-| 8 | `confidence` | u8 | 0-255 |
-| 9 | `levelLow/Mid/High` | 3 x u8 | AGC-normalised levels |
-| 12 | `onsetLow/Mid/High` | 3 x u8 | peak onset strength since the previous read (cleared on read) |
-| 15 | `energy` | u8 | slow (~8 bar) energy relative to the long-term average, 128 = average |
-| 16 | `crc` | u8 | CRC-8 (poly 0x07, init 0) over bytes 0-15 |
+| Offset | Field               | Type     | Meaning                                                                                       |
+| ------ | ------------------- | -------- | --------------------------------------------------------------------------------------------- |
+| 0      | `version`           | u8       | protocol version (1)                                                                          |
+| 1      | `status`            | u8       | bit0 signal present, bit1 beat locked, bit2 clipping                                          |
+| 2      | `bpm`               | u16 Q8.8 | tempo                                                                                         |
+| 4      | `beatPhase`         | u16      | 0-65535 = position within the current beat at the time of the read (0 = the beat)             |
+| 6      | `beatCount`         | u8       | wraps; increments each beat                                                                   |
+| 7      | `beatInBar`         | u8       | 0-3, steps once per beat; the downbeat is a best guess but the grid is stable (see design.md) |
+| 8      | `confidence`        | u8       | 0-255                                                                                         |
+| 9      | `levelLow/Mid/High` | 3 x u8   | AGC-normalised levels                                                                         |
+| 12     | `onsetLow/Mid/High` | 3 x u8   | peak onset strength since the previous read (cleared on read)                                 |
+| 15     | `energy`            | u8       | slow (~8 bar) energy relative to the long-term average, 128 = average                         |
+| 16     | `crc`               | u8       | CRC-8 (poly 0x07, init 0) over bytes 0-15                                                     |
 
 Write `[register, value]`:
 
-| Register | Value |
-|---|---|
-| 0x10 AGC mode | 0 normal, 1 vivid (3 s release), 2 lazy (20 s), 3 off (fixed gain) |
-| 0x11 noise gate | threshold as -dBFS RMS (66 = -66 dBFS); 0 = default |
+| Register            | Value                                                                            |
+| ------------------- | -------------------------------------------------------------------------------- |
+| 0x10 AGC mode       | 0 normal, 1 vivid (3 s release), 2 lazy (20 s), 3 off (fixed gain)               |
+| 0x11 noise gate     | threshold as -dBFS RMS (66 = -66 dBFS); 0 = default                              |
 | 0x12 latency offset | int8 ms, shifts `beatPhase` ahead (positive) to cover the host's display latency |
-| 0x13 tap | "a beat is now": sets the phase, two taps set the tempo |
+| 0x13 tap            | "a beat is now": sets the phase, two taps set the tempo                          |
 
 The CRC and version byte let a host reject garbage when no board is fitted. Tempo is folded into 80-170 BPM (174 is reported as 87).
 
