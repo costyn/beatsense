@@ -60,6 +60,7 @@ Analyzer::Analyzer(const Config &cfg) : cfg_(cfg) {
   for (size_t g = 0; g < Config::kGroups; g++) {
     agcPeak_[g] = floorAmp;
     onsetPeak_[g] = cfg_.onsetPeakFloor;
+    onsetOutPeak_[g] = cfg_.onsetOutFloor[g];
   }
   memset(lin_, 0, sizeof(lin_));
   memset(rn_, 0, sizeof(rn_));
@@ -210,12 +211,17 @@ void Analyzer::processFrame() {
     fluxMean_[g] += fluxMeanAlpha_ * (flux_[g] - fluxMean_[g]);
     onsetCur_[g] = o;
     odf += cfg_.tempoWeight[g] * o;
-    // u8 output scaled by a slow peak follower so it spans 0-255 whatever the music
+    // Slow peak follower for the bar accent (high floor: a group counts as "accented" only relative to a real peak)
     float pk = onsetPeak_[g] * onsetPeakDecay_;
     if (o > pk) pk = o;
     if (pk < cfg_.onsetPeakFloor) pk = cfg_.onsetPeakFloor;
     onsetPeak_[g] = pk;
-    out_.onsets[g] = toU8(o / pk);
+    // u8 output scaled by its own follower with a much lower floor, so it spans 0-255 on a quiet mic signal too
+    float opk = onsetOutPeak_[g] * onsetPeakDecay_;
+    if (o > opk) opk = o;
+    if (opk < cfg_.onsetOutFloor[g]) opk = cfg_.onsetOutFloor[g];
+    onsetOutPeak_[g] = opk;
+    out_.onsets[g] = toU8(o / opk);
     if (out_.onsets[g] > onsetHold_[g]) onsetHold_[g] = out_.onsets[g];
   }
   odfHead_ = (odfHead_ + 1) % kOdfLen;

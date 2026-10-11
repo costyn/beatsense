@@ -193,6 +193,97 @@ void test_onsets_fire_on_kicks_not_on_steady_tone() {
   TEST_ASSERT_TRUE_MESSAGE(toneMax < 10, "steady tone produced onsets");
 }
 
+// Host-side hat gate as in Lumifera: fires at >= 160, re-arms below 80
+struct Hysteresis {
+  bool armed = true;
+  int fires = 0;
+  void feed(int v) {
+    if (armed && v >= 160) {
+      fires++;
+      armed = false;
+    } else if (!armed && v < 80) {
+      armed = true;
+    }
+  }
+};
+
+// A room microphone sees the music 25-35 dB below line level; the high band's log flux is then only a few hundredths of a neper. The
+// u8 onsets must still span the range (typical hit near 255) so a 160 / 80 gate fires once per hat.
+void test_quiet_mic_onsets_span_the_range() {
+  for (double gainDb : {-25.0, -30.0, -35.0}) {
+    // Hats only, 138 BPM: one hat per beat, at the off-beat
+    synth::Spec hats;
+    hats.bpm = 138;
+    hats.seconds = 30;
+    hats.kickAmp = 0;
+    hats.gainDb = gainDb; // the 0.002 background noise comes along: -84 .. -90 dBFS, the INMP441 floor
+    Analyzer a;
+    Hysteresis gate;
+    synth::run(a, synth::render(hats), [&](double t, Analyzer &an) {
+      if (t > 8.0)
+        gate.feed(an.features().onsets[2]);
+    });
+    const double beatS = 60.0 / hats.bpm;
+    const int expected = (int)((hats.seconds - 8.0) / beatS);
+    char msg[96];
+    snprintf(msg, sizeof msg, "hat gate fires %d times for ~%d hats at %.0f dB", gate.fires, expected, gainDb);
+    // Not every hat reaches 160: an attack that straddles two hops splits its flux between them (peaks 125-255 across the hats, the
+    // same on line-level audio), so a fraction of the hats stays under the trigger. Fewer than 80% would mean the scaling is off.
+    TEST_ASSERT_TRUE_MESSAGE(gate.fires >= expected * 4 / 5 && gate.fires <= expected + 2, msg);
+
+    // Full groove: every band reaches the top of the range
+    synth::Spec groove;
+    groove.bpm = 138;
+    groove.seconds = 30;
+    groove.snareAmp = 0.3;
+    groove.gainDb = gainDb;
+    Analyzer b;
+    int mx[3] = {0, 0, 0};
+    synth::run(b, synth::render(groove), [&](double t, Analyzer &an) {
+      if (t < 8.0)
+        return;
+      for (int g = 0; g < 3; g++)
+        mx[g] = std::max(mx[g], (int)an.features().onsets[g]);
+    });
+    for (int g = 0; g < 3; g++) {
+      snprintf(msg, sizeof msg, "onset %d peaks at %d only (%.0f dB)", g, mx[g], gainDb);
+      TEST_ASSERT_TRUE_MESSAGE(mx[g] >= 240, msg);
+    }
+  }
+}
+
+// Noise that is loud enough to open the gate (-64 .. -60 dBFS white hiss) has no hits in it: the onsets must stay below the gate's
+// trigger, even though a quiet mic signal now gets a low normalisation floor
+void test_noise_above_gate_does_not_fill_the_range() {
+  for (double rms : {6.3e-4, 1e-3}) { // -64, -60 dBFS
+    synth::Spec sp;
+    sp.kickAmp = 0;
+    sp.hatAmp = 0;
+    sp.noiseRms = rms;
+    sp.seconds = 40;
+    Analyzer a;
+    Hysteresis gate[3];
+    int mx[3] = {0, 0, 0};
+    bool signalSeen = false;
+    synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+      signalSeen = signalSeen || (an.features().status & proto::kStatusSignal);
+      if (t < 5.0)
+        return;
+      for (int g = 0; g < 3; g++) {
+        gate[g].feed(an.features().onsets[g]);
+        mx[g] = std::max(mx[g], (int)an.features().onsets[g]);
+      }
+    });
+    TEST_ASSERT_TRUE_MESSAGE(signalSeen, "the noise should be above the gate (else this test proves nothing)");
+    for (int g = 0; g < 3; g++) {
+      char msg[96];
+      snprintf(msg, sizeof msg, "noise %.0e rms: onset %d peaks at %d", rms, g, mx[g]);
+      TEST_ASSERT_TRUE_MESSAGE(mx[g] < 160, msg);
+      TEST_ASSERT_EQUAL_INT(0, gate[g].fires);
+    }
+  }
+}
+
 void test_clipping_flag() {
   synth::Spec loud;
   loud.kickAmp = 1.6; // clipped by the slot conversion
@@ -261,6 +352,8 @@ int main() {
   RUN_TEST(test_noise_gate_in_silence);
   RUN_TEST(test_gate_threshold_is_adjustable);
   RUN_TEST(test_onsets_fire_on_kicks_not_on_steady_tone);
+  RUN_TEST(test_quiet_mic_onsets_span_the_range);
+  RUN_TEST(test_noise_above_gate_does_not_fill_the_range);
   RUN_TEST(test_clipping_flag);
   RUN_TEST(test_chunking_does_not_matter);
   RUN_TEST(test_energy_tracks_loudness_changes);
