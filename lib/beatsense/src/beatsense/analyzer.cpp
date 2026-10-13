@@ -55,6 +55,8 @@ Analyzer::Analyzer(const Config &cfg) : cfg_(cfg) {
   bdShortAlpha_ = alphaFor(cfg_.breakdownShortS, hopS);
   bdLongAlpha_ = alphaFor(cfg_.breakdownLongS, hopS);
   bdHeldAlpha_ = alphaFor(cfg_.breakdownHeldLongS, hopS);
+  grooveHpAlpha_ = alphaFor(cfg_.grooveHighpassS, hopS);
+  grooveCorrAlpha_ = alphaFor(cfg_.grooveCorrS, hopS);
   setAgcMode(cfg_.agcMode);
   const float floorAmp = powf(10.0f, cfg_.agcFloorDb / 20.0f);
   for (size_t g = 0; g < Config::kGroups; g++) {
@@ -141,20 +143,66 @@ void Analyzer::updateBreakdown(float lowAmp) {
   if (!signal_) {
     breakdown_ = false;
     lowShort_ = lowLong_ = 0;
+    bdCount_ = 0;
     bdRatio_ = 1.0f;
     return;
   }
   if (lowLong_ <= 0) {
     lowShort_ = lowLong_ = lowAmp;
+    bdCount_ = 1;
     bdRatio_ = 1.0f;
     return;
   }
-  lowShort_ += bdShortAlpha_ * (lowAmp - lowShort_);
-  lowLong_ += (breakdown_ ? bdHeldAlpha_ : bdLongAlpha_) * (lowAmp - lowLong_);
+  bdCount_++;
+  // Plain averages until their windows have filled (like the energy average), both, so that they agree at the start: the slow one
+  // started from a single hop, which on a signal that begins with a kick is a peak, sat above the real mean for ~12 s and read as a
+  // breakdown (ratio 0.5-0.7); and a plain slow average next to a still-empty fast one reads as a breakdown at the first kick
+  lowShort_ += fmaxf(1.0f / (float)bdCount_, bdShortAlpha_) * (lowAmp - lowShort_);
+  const float longA = fmaxf(1.0f / (float)bdCount_, breakdown_ ? bdHeldAlpha_ : bdLongAlpha_);
+  lowLong_ += longA * (lowAmp - lowLong_);
   const float ratio = lowShort_ / fmaxf(lowLong_, 1e-9f);
   bdRatio_ = ratio;
   if (!breakdown_ && ratio < cfg_.breakdownEnter) breakdown_ = true;
   else if (breakdown_ && ratio > cfg_.breakdownExit) breakdown_ = false;
+}
+
+// Groove level = (the low band is back) x (the low band repeats at the beat period). The first factor is the breakdown ratio; the second
+// is the correlation coefficient between the low-band amplitude, mean-removed, and the same signal one beat earlier, from exponentially
+// weighted sums: a steady kick (and the bass that goes with it) repeats every beat, a rumble, a bass note, or a pattern at another
+// metrical level (3 against 2) does not, whatever its level. O(1) per hop. Without a tempo there is no beat period and no groove.
+void Analyzer::updateGroove(float lowAmp) {
+  if (!signal_) {
+    grooveInit_ = false;
+    grooveRxy_ = grooveRxx_ = grooveRyy_ = 0;
+    grooveOut_ = 0;
+    return;
+  }
+  if (!grooveInit_) {
+    grooveMean_ = lowAmp;
+    grooveInit_ = true;
+  }
+  grooveMean_ += grooveHpAlpha_ * (lowAmp - grooveMean_);
+  const float x = lowAmp - grooveMean_;
+  grooveHead_ = (grooveHead_ + 1) % kGrooveHist;
+  grooveHist_[grooveHead_] = x;
+  if (!haveTempo_ || clockBpm_ <= 0) {
+    grooveOut_ = 0;
+    return;
+  }
+  const float lag = clampf(60.0f / clockBpm_ * frameRate_, 1.0f, (float)(kGrooveHist - 2)); // frames per beat
+  const size_t li = (size_t)lag;
+  const float lf = lag - (float)li;
+  const float a = grooveHist_[(grooveHead_ + kGrooveHist - li) % kGrooveHist];
+  const float b = grooveHist_[(grooveHead_ + kGrooveHist - li - 1) % kGrooveHist];
+  const float y = a + lf * (b - a); // the same signal one beat ago
+  grooveRxy_ += grooveCorrAlpha_ * (x * y - grooveRxy_);
+  grooveRxx_ += grooveCorrAlpha_ * (x * x - grooveRxx_);
+  grooveRyy_ += grooveCorrAlpha_ * (y * y - grooveRyy_);
+  const float f2 = cfg_.grooveFloorAmp * cfg_.grooveFloorAmp;
+  const float corr = fmaxf(grooveRxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveRyy_), f2);
+  const float back = (bdRatio_ - cfg_.grooveRatioLow) / (cfg_.grooveRatioHigh - cfg_.grooveRatioLow);
+  const float steady = (corr - cfg_.grooveCorrLow) / (cfg_.grooveCorrHigh - cfg_.grooveCorrLow);
+  grooveOut_ = toU8(clampf(back, 0.0f, 1.0f) * clampf(steady, 0.0f, 1.0f));
 }
 
 void Analyzer::processFrame() {
@@ -195,6 +243,7 @@ void Analyzer::processFrame() {
   for (size_t g = 0; g < Config::kGroups; g++) groupAmp[g] = sqrtf(groupPow[g]);
   updateLevels(groupAmp);
   updateBreakdown(groupAmp[0]);
+  updateGroove(groupAmp[0]);
 
   // --- Onset strength: log-compressed spectral flux per group ---
   float odf = 0;
@@ -664,6 +713,7 @@ void Analyzer::buildOutput() {
   o.status = (signal_ ? proto::kStatusSignal : 0) | (locked_ ? proto::kStatusLocked : 0) | (clipLeft_ > 0 ? proto::kStatusClipping : 0) |
          (breakdown_ ? proto::kStatusBreakdown : 0);
   o.breakdownRatio = bdRatio_;
+  o.groove = grooveOut_;
 }
 
 Features Analyzer::takeFeatures() {

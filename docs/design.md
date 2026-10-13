@@ -58,7 +58,10 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    seconds, breaking the phase. Four measures, all in `Config`:
    (a) *Breakdown detector.* Low-band amplitude averaged over 1 s against its own slow average (12 s; 60 s while in a breakdown, so
    the kick returning ends it at once and a permanent change ends it by itself after ~40 s). Ratio < 0.4 (-8 dB) enters, > 0.8 leaves,
-   only while there is signal. In a breakdown no tempo change is considered (pending evidence is cleared), the beat clock free-runs
+   only while there is signal. Both averages are plain (cumulative) averages until their windows have filled, like the energy average
+   (changed with the groove level): the slow one used to start from a single hop, which on a signal that begins with a kick is a peak, so
+   it sat above the real mean and the ratio read 0.5-0.7 for ~12 s (found at -25 dB, where the first kick is what turns the signal gate
+   on). In a breakdown no tempo change is considered (pending evidence is cleared), the beat clock free-runs
    on its prediction (no PLL correction from the leftover percussion), and `locked` is held. The state is reported as status bit 3
    (`kStatusBreakdown`; added without a protocol version bump, the layout is unchanged) and the ratio as `Features::breakdownRatio`
    (not in the frame; 1.0 while there is no signal), which the debug CSV and `analyze_wav` print as `breakdown` and `bd_ratio`.
@@ -125,6 +128,49 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
       random kick velocities (+-25%) and a backbeat, no re-alignment; with +-50% velocity, 1 of 40.
 12. **Tap.** `tap()` sets the phase to 0 (a tap is a beat). Two taps 0.35-0.75 s apart also set the tempo (if it differs by more than 3%).
     The autocorrelation overrides it again if the music disagrees for 3 updates.
+
+13. **Groove level** (`Features::groove`, frame byte 16). The host (an LED lamp) scales all its beat effects by this: full in the groove,
+    about 10% in a breakdown, partly during a build. It does its own easing and fires its own "drop" event on the first kick, so this is
+    a **raw, honest 0-255 measure of how much kick-driven groove is present right now**, not smoothed or debounced, reacting within about a
+    second. A state like `levels` and `energy`, not peak-held like the onsets. 0 without signal or without a tempo. It is the product of
+    two ramps, per hop, O(1):
+    - *The low band is back*: the breakdown ratio of stage 7 (low-band amplitude averaged over 1 s / its slow average), linear
+      `grooveRatioLow` 0.3 -> 0, `grooveRatioHigh` 0.9 -> 1. This separates the groove from a passage that still repeats at the beat but
+      has lost its kick (a bass line, the other percussion; Concrete's second break has such a remnant).
+    - *The low band repeats at the beat period* (steadiness): the correlation coefficient between the low-band amplitude (the group amplitude
+      before the AGC, so level-independent) and the same signal one beat earlier (`60 / clockBpm`, linear interpolation), both with a slow
+      mean removed (`grooveHighpassS` 0.25 s, leaves the kick modulation). Exponentially weighted sums `Rxy`, `Rxx`, `Ryy` (`grooveCorrS`
+      0.5 s, about two beats at 120 BPM); `corr = max(Rxy, 0) / sqrt(Rxx * Ryy)`, mapped `grooveCorrLow` 0.3 -> 0, `grooveCorrHigh` 0.7 -> 1.
+      The denominator never goes below `grooveFloorAmp`^2 (0.002 = -54 dBFS, like `agcFloorDb`), so a nearly empty low band cannot make a
+      correlation out of noise. A steady kick, with the bass that goes with it, repeats every beat (0.75-0.95 on the three test tracks); a
+      rumble, a held bass note (no modulation: correlation 0) or a 3-against-2 pattern (the rolling bass of Satory's build, period 2/3 beat)
+      does not.
+    - *Why not confidence*: it is smoothed (rise 1 s, fall 1.5 s) and measures the tempo comb over 6 s, so it lags a break by seconds, it
+      fell to 4-72 during Concrete's break while the lock held, and it needs 3-4 s to recover after one. *Why not on-grid onset energy*
+      (tried first, on the CSV columns): the low-band onset is noisy on real music and the wide onsets of a swell fill the beat grid as
+      well as a kick does (steady kick 0.4-0.6 vs rumble 0.1-0.5, no usable threshold); the normalised correlation of the amplitude
+      separated the cases (steady kick 0.65-0.95, rumble and build 0.0-0.2) and needs no threshold on the onset size. No 2-hop smoothing of
+      the amplitude: the frame-to-frame alternation of a low bass tone (an FFT-window effect) is part of what keeps a bass-only passage from
+      correlating at the beat lag, and smoothing it raised the false groove in the Satory build from 0.43 to 0.70.
+    - *Why a product, and the ramps*: either factor missing means no groove. The host eases slowly down and quickly up, so a brief false
+      high would get through and a brief false low would not: false highs weigh more than rise time. A correlation ramp of 0.2 -> 0.6
+      rises ~0.3 s faster after a break but let the Satory build reach 0.59 (a few seconds of bass pattern at 4:56-4:59); the chosen
+      0.3 -> 0.7 peaks at 0.43 there. A shorter `grooveCorrS` (0.35 s) did not rise noticeably faster, because the correlation needs a repeat:
+      one beat of the new kick before the first pair exists.
+    - *Measured* (three real tracks, converted to 22.05 kHz mono; identical at `--gain-db -25`: the sums are normalised and the ratio is
+      relative). Steady groove: median 1.00, p10 0.82-1.00; below 0.5 for 6-8% of the time on Concrete (see below), 0-1% on Vapour, 0-4% on
+      Satory. Long breaks: <= 0.15 within 0.5-0.8 s of the kick stopping, max 0.09 afterwards (Concrete 2:01 and 4:45, Vapour 3:00-4:02).
+      Satory build 4:35-5:12 (bass and drums, no steady kick): median 0, max 0.43, above 0.3 for ~0.3 s in total. Rise after the kick
+      returns (0.5 / 0.85): Vapour 4:02 0.58 / 0.82 s; Concrete 2:30 0.45 / 0.53 s; Concrete 5:15 1.46 / 1.77 s (kick, bass and the other
+      percussion all return together, and the correlation of that mix needs two repeats). Satory: full by 5:16, after a short rolling-bass
+      stretch from 5:14.9 (the amplitude shows the steady kick from about 5:16; the ear-and-confidence estimate was 5:20, confidence lags).
+      One-bar kick drops of Satory (1.6-2.9 s): G < 0.5 for 2.2-3.7 s, about a second longer than the hole, which is the correlation's
+      memory. Concrete dips below 0.5 for 1-2 s every 15 s (8 bars: 1:15, 1:30, 1:45, 3:45, 4:00, 5:30, 5:45) where the low-band pattern has a
+      hole or a fill (a half-second hole at 1:45 is visible in the amplitude); they are left in as honest.
+    - *Startup*: the correlation needs the beat period, so the groove is 0 until a tempo has been found (about 3 s).
+    Tests (`test/test_groove`): >= 0.85 in a steady synthetic groove and at -25 dB, <= 0.15 within 1.5 s of the kick stopping and for the
+    rest of the break, still low with a 60 Hz bass note playing (energy but no repetition), back to 0.85 within 1 s of the kick returning,
+    a clear dip in a one-bar drop, 0 without signal.
 
 ## Protocol
 
