@@ -7,7 +7,7 @@
 //   ./analyze_wav song.wav > song.csv        (22050 or 44100 Hz, 16/24/32-bit PCM or float, mono or stereo)
 //   ./analyze_wav song.wav --gain-db -20     (simulate a quieter room)
 //   ./analyze_wav song.wav --summary         (short text report instead of the CSV)
-//   ./analyze_wav song.wav --clicks out.wav  (the song with a click on every predicted beat, to check sync by ear)
+//   ./analyze_wav song.wav --clicks out.wav  (the song with a click on every predicted beat, to check sync by ear; lower pitch in a breakdown)
 //   ./analyze_wav song.wav --summary --csv song.csv   (both)
 //   python3 tools/plot.py song.csv
 #include <algorithm>
@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include <beatsense/analyzer.h>
 #include "wav.h"
@@ -119,6 +120,19 @@ void summary(const std::vector<Row> &rows, const std::vector<double> &beatTimes,
       printf("beat period after first lock: too few beats\n");
     }
   }
+  // Breakdown segments: runs of frames with the status bit set
+  {
+    std::vector<std::pair<double, double>> bd;
+    bool in = false;
+    for (const Row &r : rows) {
+      const bool b = (r.f.status & proto::kStatusBreakdown) != 0;
+      if (b && !in) bd.push_back({r.t, r.t});
+      if (b) bd.back().second = r.t;
+      in = b;
+    }
+    printf("breakdowns: %zu\n", bd.size());
+    for (const auto &s : bd) printf("  %6.1f - %6.1f  (%.1f s)\n", s.first, s.second, s.second - s.first);
+  }
   std::vector<double> conf;
   for (const Row &r : rows) {
     if (firstLock >= 0 && r.t >= firstLock) conf.push_back(r.f.confidence);
@@ -147,8 +161,9 @@ void summary(const std::vector<Row> &rows, const std::vector<double> &beatTimes,
 }
 
 // Click track: a short decaying sine on every predicted beat, louder with a higher pitch on beatInBar 0
-void addClick(std::vector<float> &x, double fs, double timeS, bool accent) {
-  const double hz = accent ? 1760.0 : 1100.0, amp = accent ? 0.7 : 0.35;
+// During a breakdown the clicks are an octave-and-a-bit lower (550 / 880 Hz) so the held clock is audible as such.
+void addClick(std::vector<float> &x, double fs, double timeS, bool accent, bool breakdown) {
+  const double hz = breakdown ? (accent ? 880.0 : 550.0) : (accent ? 1760.0 : 1100.0), amp = accent ? 0.7 : 0.35;
   const long start = (long)(timeS * fs + 0.5);
   const long len = (long)(0.03 * fs);
   for (long i = 0; i < len; i++) {
@@ -215,15 +230,16 @@ int main(int argc, char **argv) {
   bool havePrev = false;
   if (csv) {
     fprintf(csv, "time_s,onset_low,onset_mid,onset_high,bpm,beat_phase,beat_count,beat_in_bar,confidence,level_low,level_mid,level_high,"
-                 "energy,status\n");
+                 "energy,status,breakdown,bd_ratio\n");
   }
   for (size_t i = 0; i + hop <= slots.size(); i += hop) {
     a.process(&slots[i], hop);
     const beatsense::Features &f = a.features();
     const double t = (double)(i + hop) / fs;
     if (csv) {
-      fprintf(csv, "%.4f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", t, f.onsets[0], f.onsets[1], f.onsets[2], f.bpm, f.beatPhase,
-              f.beatCount, f.beatInBar, f.confidence, f.levels[0], f.levels[1], f.levels[2], f.energy, f.status);
+      fprintf(csv, "%.4f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.3f\n", t, f.onsets[0], f.onsets[1], f.onsets[2], f.bpm, f.beatPhase,
+              f.beatCount, f.beatInBar, f.confidence, f.levels[0], f.levels[1], f.levels[2], f.energy, f.status,
+              (f.status & beatsense::proto::kStatusBreakdown) ? 1u : 0u, f.breakdownRatio);
     }
     if (wantSummary) rows.push_back(Row{t, f});
     if (a.barRealignments() != prevRealigns) {
@@ -234,7 +250,7 @@ int main(int argc, char **argv) {
     if (f.bpm > 0 && havePrev && (uint8_t)(f.beatCount - prevCount) == 1) {
       const double ago = f.beatPhase / 65536.0 * 60.0 / f.bpm;
       beatTimes.push_back(t - ago);
-      if (clicksPath) addClick(clicks, audio.sourceRate, t - ago, f.beatInBar == 0);
+      if (clicksPath) addClick(clicks, audio.sourceRate, t - ago, f.beatInBar == 0, (f.status & beatsense::proto::kStatusBreakdown) != 0);
     }
     prevCount = f.beatCount;
     havePrev = true;
