@@ -4,7 +4,7 @@ Firmware and DSP for an audio-analysis daughterboard: an **M5Stack StampS3** (ES
 **tempo, beat phase, band levels, onsets and a slow energy value** over **I2C** to an LED controller (built for Lumifera, usable by any I2C host).
 The analysis is a portable C++ library with no Arduino dependency, so it is unit-tested and tuned on a laptop, with synthetic audio or real WAV files.
 
-State, not events: the host polls a 17-byte frame and gets the beat phase _as of the moment of the read_, so the poll rate only affects smoothness.
+State, not events: the host polls an 18-byte frame and gets the beat phase _as of the moment of the read_, so the poll rate only affects smoothness.
 
 ## Status (2026-10-10)
 
@@ -81,14 +81,14 @@ Notes:
 WS is on G3, a strapping pin (JTAG source select). It only matters with a specific eFuse setting, so it's fine on a stock StampS3;
 the prototype uses it.
 
-## I2C protocol (version 1)
+## I2C protocol (version 2)
 
 Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined in [`include/beatsense_protocol.h`](include/beatsense_protocol.h)
 (MIT licensed, with encode/decode/CRC helpers). **Any read returns this frame from offset 0**; multi-byte fields are little-endian.
 
 | Offset | Field               | Type     | Meaning                                                                                       |
 | ------ | ------------------- | -------- | --------------------------------------------------------------------------------------------- |
-| 0      | `version`           | u8       | protocol version (1)                                                                          |
+| 0      | `version`           | u8       | protocol version (2)                                                                          |
 | 1      | `status`            | u8       | bit0 signal present, bit1 beat locked, bit2 clipping, bit3 breakdown (kick gone, tempo held)   |
 | 2      | `bpm`               | u16 Q8.8 | tempo                                                                                         |
 | 4      | `beatPhase`         | u16      | 0-65535 = position within the current beat at the time of the read (0 = the beat)             |
@@ -98,7 +98,8 @@ Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined
 | 9      | `levelLow/Mid/High` | 3 x u8   | AGC-normalised levels                                                                         |
 | 12     | `onsetLow/Mid/High` | 3 x u8   | peak onset strength since the previous read (cleared on read)                                 |
 | 15     | `energy`            | u8       | slow (~8 bar) energy relative to the long-term average, 128 = average                         |
-| 16     | `crc`               | u8       | CRC-8 (poly 0x07, init 0) over bytes 0-15                                                     |
+| 16     | `groove`            | u8       | 0-255: how much kick-driven groove is present right now (a state, raw, see design.md)         |
+| 17     | `crc`               | u8       | CRC-8 (poly 0x07, init 0) over bytes 0-16                                                     |
 
 Write `[register, value]`:
 
@@ -109,7 +110,10 @@ Write `[register, value]`:
 | 0x12 latency offset | int8 ms, shifts `beatPhase` ahead (positive) to cover the host's display latency |
 | 0x13 tap            | "a beat is now": sets the phase, two taps set the tempo                          |
 
-The CRC and version byte let a host reject garbage when no board is fitted. Tempo is folded into 80-170 BPM (174 is reported as 87).
+The CRC and version byte let a host reject garbage when no board is fitted. Version 2 added `groove` and moved the CRC from byte 16 to
+17 (the frame grew from 17 to 18 bytes); a v1 frame is rejected by a v2 host and vice versa.
+`groove` is 0 without signal, a breakdown or a steady kick, and 255 in a full groove; it reacts within about a second and is deliberately
+not smoothed or debounced, so hosts should ease it themselves (slowly down, quickly up). Tempo is folded into 80-170 BPM (174 is reported as 87).
 
 ## Build and test
 

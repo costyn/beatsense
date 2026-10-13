@@ -19,6 +19,7 @@ static proto::Frame sample() {
   f.level[0] = 1; f.level[1] = 2; f.level[2] = 3;
   f.onset[0] = 4; f.onset[1] = 5; f.onset[2] = 6;
   f.energy = 140;
+  f.groove = 222;
   return f;
 }
 
@@ -35,8 +36,8 @@ void test_frame_round_trip() {
 void test_frame_layout_matches_documentation() {
   uint8_t b[proto::kFrameSize];
   proto::encodeFrame(sample(), b);
-  TEST_ASSERT_EQUAL_UINT(17, proto::kFrameSize);
-  TEST_ASSERT_EQUAL_UINT8(1, b[0]);
+  TEST_ASSERT_EQUAL_UINT(18, proto::kFrameSize);
+  TEST_ASSERT_EQUAL_UINT8(2, b[0]);
   TEST_ASSERT_EQUAL_UINT8(3, b[1]);
   TEST_ASSERT_EQUAL_UINT8(0x80, b[2]); // 127.5 * 256 = 0x7F80, little-endian
   TEST_ASSERT_EQUAL_UINT8(0x7F, b[3]);
@@ -48,7 +49,28 @@ void test_frame_layout_matches_documentation() {
   TEST_ASSERT_EQUAL_UINT8(1, b[9]);
   TEST_ASSERT_EQUAL_UINT8(4, b[12]);
   TEST_ASSERT_EQUAL_UINT8(140, b[15]);
-  TEST_ASSERT_EQUAL_UINT8(proto::crc8(b, 16), b[16]);
+  TEST_ASSERT_EQUAL_UINT8(222, b[16]); // groove
+  TEST_ASSERT_EQUAL_UINT8(proto::crc8(b, 17), b[17]);
+}
+
+// Version 1 frames (17 bytes, CRC at 16) and frames of any other version are refused, even with a valid CRC, so a host never
+// misreads the layout
+void test_other_versions_are_rejected() {
+  uint8_t b[proto::kFrameSize];
+  proto::encodeFrame(sample(), b);
+  const uint8_t others[] = {0, 1, 3};
+  for (uint8_t v : others) {
+    b[0] = v;
+    b[17] = proto::crc8(b, 17); // a consistent frame of the other version
+    proto::Frame g;
+    TEST_ASSERT_FALSE(proto::decodeFrame(b, g));
+  }
+  // a genuine v1 frame, padded: bytes 0-15 as before, CRC over 0-15 at byte 16, whatever follows
+  uint8_t v1[proto::kFrameSize] = {0};
+  v1[0] = 1;
+  v1[16] = proto::crc8(v1, 16);
+  proto::Frame g;
+  TEST_ASSERT_FALSE(proto::decodeFrame(v1, g));
 }
 
 void test_crc8_known_value() {
@@ -101,17 +123,20 @@ void test_features_to_frame() {
   f.beatPhase = 1234;
   f.status = proto::kStatusClipping;
   f.levels[2] = 9;
+  f.groove = 77;
   const proto::Frame fr = toFrame(f);
   TEST_ASSERT_EQUAL_UINT16(0x7F80, fr.bpmQ88);
   TEST_ASSERT_EQUAL_UINT16(1234, fr.beatPhase);
   TEST_ASSERT_EQUAL_UINT8(proto::kStatusClipping, fr.status);
   TEST_ASSERT_EQUAL_UINT8(9, fr.level[2]);
+  TEST_ASSERT_EQUAL_UINT8(77, fr.groove);
 }
 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_frame_round_trip);
   RUN_TEST(test_frame_layout_matches_documentation);
+  RUN_TEST(test_other_versions_are_rejected);
   RUN_TEST(test_crc8_known_value);
   RUN_TEST(test_crc_catches_every_single_bit_flip);
   RUN_TEST(test_absent_board_is_rejected);

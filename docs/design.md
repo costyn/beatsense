@@ -126,6 +126,13 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
 12. **Tap.** `tap()` sets the phase to 0 (a tap is a beat). Two taps 0.35-0.75 s apart also set the tempo (if it differs by more than 3%).
     The autocorrelation overrides it again if the music disagrees for 3 updates.
 
+## Protocol
+
+`include/beatsense_protocol.h` (MIT). Version 2 is an 18-byte frame: `groove` at byte 16, CRC-8 over bytes 0-16 at byte 17. Version 1 was
+17 bytes with the CRC at byte 16 (no `groove`). The version byte is checked together with the CRC, so a v2 host never accepts a v1 frame
+and the other way round. Status bit 3 (breakdown) is unchanged and keeps its meaning (tempo hold); `groove` is a separate, finer signal.
+The firmware copies `groove` from the last hop like `levels` and `energy` (a state: `onRequest()` neither holds nor resets it).
+
 ## Output scaling
 
 **Onsets on a quiet (microphone) signal.** The original single floor of 1.0 nepers was tuned on line-level WAVs. Through a room

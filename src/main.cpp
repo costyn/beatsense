@@ -53,7 +53,7 @@ static void i2sInit() {
 }
 
 // ---------- I2C slave ----------
-// Read: always the 17-byte frame. beatPhase is advanced by the time since the frame was produced, so it refers to "now" at the
+// Read: always the 18-byte frame (beatsense::proto::kFrameSize). beatPhase is advanced by the time since the frame was produced, so it refers to "now" at the
 // moment of the request. onset fields are the peak since the previous read.
 static void onRequest() {
   beatsense::proto::Frame f;

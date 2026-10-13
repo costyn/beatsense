@@ -29,6 +29,7 @@ struct Features {
   uint8_t onsets[3] = {0, 0, 0}; // peak-hold since the last takeFeatures() (cleared on read), or this hop's value from features()
   uint8_t energy = 128;     // slow energy relative to the long-term average, 128 = average
   uint8_t status = 0;       // proto::kStatus* bits
+  uint8_t groove = 0;       // kick-driven groove present right now (docs/design.md, "Groove level"); 0 without signal
   float breakdownRatio = 1.0f; // low-band short / long amplitude (breakdownEnter / breakdownExit compare against it); not in the I2C frame.
                                // 1.0 (neutral) while there is no signal or the averages have not started
 };
@@ -299,6 +300,7 @@ inline proto::Frame toFrame(const Features &f) {
     fr.onset[i] = f.onsets[i];
   }
   fr.energy = f.energy;
+  fr.groove = f.groove;
   return fr;
 }
 

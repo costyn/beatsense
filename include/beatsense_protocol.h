@@ -3,10 +3,10 @@
 // This header is deliberately MIT-licensed (the rest of beatsense is EUPL-1.2) so that I2C hosts under any license can include it
 // without inheriting the copyleft. The author owns the code and can dual-license it this way.
 //
-// beatsense I2C protocol, version 1.
+// beatsense I2C protocol, version 2 (version 1: 17 bytes, no `groove`; a v2 host rejects a v1 frame: version byte, CRC position).
 //
 // The board is an I2C slave (default 7-bit address 0x42).
-//   Read : any read returns the 17-byte status frame below, starting at offset 0 (no register pointer needed).
+//   Read : any read returns the 18-byte status frame below, starting at offset 0 (no register pointer needed).
 //   Write: [register, value] sets a config register or taps (see Reg). Unknown registers are ignored.
 //
 // The frame describes *state*, not events: beatPhase is the position within the current beat at the moment the frame was produced,
@@ -23,7 +23,9 @@
 //    9   level[3]    u8        low/mid/high, AGC-normalised
 //   12   onset[3]    u8        max onset strength since the previous read (peak-hold, cleared on read)
 //   15   energy      u8        slow (~8 bar) energy relative to the long-term average; 128 = average
-//   16   crc         u8        CRC-8 (poly 0x07, init 0) over bytes 0-15
+//   16   groove      u8        0-255: how much kick-driven groove is present right now (a state, not peak-held). Raw and fast (about
+//                               1 s): 0 in a breakdown or without a steady kick, 255 in a full groove. Hosts do their own easing.
+//   17   crc         u8        CRC-8 (poly 0x07, init 0) over bytes 0-16
 #ifndef BEATSENSE_PROTOCOL_H
 #define BEATSENSE_PROTOCOL_H
 
@@ -33,9 +35,9 @@
 namespace beatsense {
 namespace proto {
 
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;
 constexpr uint8_t kDefaultI2cAddress = 0x42; // 7-bit; the firmware's address is configurable in src/config.h
-constexpr size_t kFrameSize = 17;
+constexpr size_t kFrameSize = 18;
 
 // status bits
 constexpr uint8_t kStatusSignal = 1 << 0;  // input is above the noise gate
@@ -66,6 +68,7 @@ struct Frame {
   uint8_t level[3] = {0, 0, 0};
   uint8_t onset[3] = {0, 0, 0};
   uint8_t energy = 0;
+  uint8_t groove = 0;
 
   float bpm() const { return bpmQ88 / 256.0f; }
 };
@@ -102,12 +105,13 @@ inline void encodeFrame(const Frame &f, uint8_t out[kFrameSize]) {
     out[12 + i] = f.onset[i];
   }
   out[15] = f.energy;
-  out[16] = crc8(out, 16);
+  out[16] = f.groove;
+  out[17] = crc8(out, 17);
 }
 
 // Returns false (and leaves `f` untouched) if the CRC or the version doesn't match, e.g. when the bus floats because no board is fitted
 inline bool decodeFrame(const uint8_t in[kFrameSize], Frame &f) {
-  if (crc8(in, 16) != in[16] || in[0] != kVersion) {
+  if (crc8(in, 17) != in[17] || in[0] != kVersion) {
     return false;
   }
   f.version = in[0];
@@ -122,6 +126,7 @@ inline bool decodeFrame(const uint8_t in[kFrameSize], Frame &f) {
     f.onset[i] = in[12 + i];
   }
   f.energy = in[15];
+  f.groove = in[16];
   return true;
 }
 
