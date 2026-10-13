@@ -321,6 +321,64 @@ void test_breakdown_status_bit_follows_breakdown() {
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, lateSet, "breakdown bit set again after the groove returned");
 }
 
+// Second break of the live test: the kick stops, then a low-band element (bass note, tom) comes back at about two thirds of the
+// groove's low amplitude before the kick does. The ratio then sits between the old exit (0.6) and the new one (0.8): the detector must stay in the
+// breakdown until the kicks return, and end it shortly after.
+void test_breakdown_persists_with_low_band_remnant() {
+  synth::Spec sp;
+  sp.bpm = 128;
+  sp.seconds = 52;
+  sp.noiseRms = 0.005;
+  sp.snareAmp = 0.25;
+  sp.breakFromS = 0.2 + 64 * 60.0 / 128; // beat 64 = 30.2 s
+  sp.breakToS = 0.2 + 96 * 60.0 / 128;   // 15 s break, kicks back on a beat
+  sp.bassFromS = sp.breakFromS + 6.0; // the kick is gone first (ratio < breakdownEnter), the remnant returns after 6 s
+  sp.bassAmp = 0.042;
+  Analyzer a;
+  double clearedAt = -1, minRatio = 1e9, maxRatio = 0;
+  int earlyOff = 0, earlySet = 0;
+  synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+    const Features &f = an.features();
+    const bool bit = (f.status & proto::kStatusBreakdown) != 0;
+    if (t < sp.breakFromS && bit) earlySet++;
+    if (t >= sp.bassFromS + 3.0 && t < sp.breakToS) {
+      if (!bit) earlyOff++;
+      minRatio = fmin(minRatio, f.breakdownRatio);
+      maxRatio = fmax(maxRatio, f.breakdownRatio);
+    }
+    if (t >= sp.breakToS && !bit && clearedAt < 0) clearedAt = t - sp.breakToS;
+  });
+  printf("    ratio inside the break %.3f..%.3f, bit cleared %.2f s after the kicks return\n", minRatio, maxRatio, clearedAt);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, earlySet, "breakdown bit set during the groove");
+  TEST_ASSERT_TRUE_MESSAGE(minRatio > 0.62f && maxRatio > 0.65f && maxRatio < a.config().breakdownExit, "remnant ratio not between the old (0.6) and the new exit threshold");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, earlyOff, "breakdown ended while only the low-band remnant was playing");
+  TEST_ASSERT_TRUE_MESSAGE(clearedAt >= 0 && clearedAt < 4.0, "breakdown bit not cleared within 4 s of the kicks returning");
+}
+
+// The higher exit threshold must not trap the detector: when the kick never comes back (a permanent change; here only the 65% low-band
+// remnant plays on), the held long average (60 s) decays towards the new level and ends the breakdown by itself.
+void test_breakdown_ends_after_permanent_change() {
+  synth::Spec sp;
+  sp.bpm = 128;
+  sp.seconds = 140;
+  sp.noiseRms = 0.005;
+  sp.snareAmp = 0.25;
+  sp.breakFromS = 0.2 + 64 * 60.0 / 128;
+  sp.breakToS = 1e9; // the kick never returns
+  sp.bassFromS = sp.breakFromS + 6.0;
+  sp.bassAmp = 0.042;
+  Analyzer a;
+  double setAt = -1, endedAt = -1;
+  synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+    const bool bit = (an.features().status & proto::kStatusBreakdown) != 0;
+    if (bit && setAt < 0) setAt = t - sp.breakFromS;
+    if (setAt >= 0 && !bit && endedAt < 0) endedAt = t - sp.breakFromS;
+  });
+  printf("    breakdown set %.1f s, ended %.1f s after the kick stopped for good\n", setAt, endedAt);
+  TEST_ASSERT_TRUE_MESSAGE(setAt >= 0 && setAt < 4.0, "breakdown bit not set after the kick stopped");
+  TEST_ASSERT_TRUE_MESSAGE(endedAt > 0 && endedAt < 75.0, "breakdown still set 75 s after a permanent change");
+}
+
 // The reported tempo converges to the true one: the comb's linear interpolation used to round every lag towards whole frames (140 was
 // reported as 139.76), and a first-order PLL cannot correct a period error that the autocorrelation hides.
 void test_tempo_accuracy_after_15s() {
@@ -430,6 +488,8 @@ int main() {
   RUN_TEST(test_tempo_change_relocks);
   RUN_TEST(test_breakdown_holds_tempo_and_phase);
   RUN_TEST(test_breakdown_status_bit_follows_breakdown);
+  RUN_TEST(test_breakdown_persists_with_low_band_remnant);
+  RUN_TEST(test_breakdown_ends_after_permanent_change);
   RUN_TEST(test_tempo_accuracy_after_15s);
   RUN_TEST(test_free_running_drift_over_breakdown);
   RUN_TEST(test_silence_drops_confidence_and_signal);

@@ -57,11 +57,19 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    the remaining percussion (dotted-eighth stabs) scores higher than the real tempo and the output flipped to 140 x 2/3 = 93 BPM for
    seconds, breaking the phase. Four measures, all in `Config`:
    (a) *Breakdown detector.* Low-band amplitude averaged over 1 s against its own slow average (12 s; 60 s while in a breakdown, so
-   the kick returning ends it at once and a permanent change ends it by itself after ~40 s). Ratio < 0.4 (-8 dB) enters, > 0.6 leaves,
+   the kick returning ends it at once and a permanent change ends it by itself after ~40 s). Ratio < 0.4 (-8 dB) enters, > 0.8 leaves,
    only while there is signal. In a breakdown no tempo change is considered (pending evidence is cleared), the beat clock free-runs
    on its prediction (no PLL correction from the leftover percussion), and `locked` is held. The state is reported as status bit 3
    (`kStatusBreakdown`; added without a protocol version bump, the layout is unchanged) and the ratio as `Features::breakdownRatio`
    (not in the frame; 1.0 while there is no signal), which the debug CSV and `analyze_wav` print as `breakdown` and `bd_ratio`.
+   *Exit threshold 0.8 (was 0.6).* Live test 2026-10-13, room mic (StampS3 + INMP441) next to a small speaker, techno track "Concrete"
+   (Mamin), 128 BPM, two breaks by ear at 2:00-2:30 and 4:45-5:15 (in the second only the bass drum stops, other percussion stays).
+   With exit 0.6 the detector gave 2:02.1-2:29.8 and 4:47.5-5:03.6: the second break ended 11 s early because the ratio sat at
+   0.62-0.71 from 5:03 to 5:15 (something returns in the low band before the kick). In the groove the ratio stays ~0.9-1.1 with brief
+   dips not below ~0.8. Replaying the recorded ratio with exit 0.8 gives 2:02.2-2:30.1 and 4:47.5-5:14.8 (matches by ear). Short raw
+   detections during fills (3:14.4 for 0.6 s, 4:28.4 for 1.6 s) remain; they are left to the host (Lumifera fades fx intensity
+   smoothly, so brief ones are harmless). The lock held through both breaks; confidence fell to 4-72 during the first. Test:
+   `test_breakdown_persists_with_low_band_remnant` (bass note at ~65% of the groove's low amplitude).
    (b) *Harmonic ratios need evidence.* A candidate at 3:2, 4:3, 5:4 or 5:3 (either way, +-4%) of the current tempo is the same music
    read at another level, so it must win 32 updates in a row (~8 s), or 12 (~3 s) when the current tempo has no support (raw score
    < `confLow`) and the candidate is strong (raw >= 0.4). Other changes (e.g. 120 -> 128) and octaves keep the 3-update rule.

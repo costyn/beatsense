@@ -111,7 +111,7 @@ struct Config {
   float breakdownLongS = 12.0f;     // ...against its slow average (outside a breakdown)
   float breakdownHeldLongS = 60.0f; // slow average time constant inside a breakdown, so a permanent change ends it after ~40 s
   float breakdownEnter = 0.4f;      // short / long amplitude ratio below which a breakdown starts (-8 dB)
-  float breakdownExit = 0.6f;       // ...and above which it ends
+  float breakdownExit = 0.8f;       // ...and above which it ends
 
   // --- Beat phase ---
   uint16_t phaseEveryFrames = 4; // measurement + PLL correction cadence (~46 ms)

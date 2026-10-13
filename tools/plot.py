@@ -13,7 +13,7 @@ import csv
 
 # Breakdown thresholds of the analyzer: Config::breakdownEnter / breakdownExit in lib/beatsense/src/beatsense/analyzer.h
 BREAKDOWN_ENTER = 0.4
-BREAKDOWN_EXIT = 0.6
+BREAKDOWN_EXIT = 0.8
 
 
 def main():
