@@ -29,6 +29,8 @@ struct Features {
   uint8_t onsets[3] = {0, 0, 0}; // peak-hold since the last takeFeatures() (cleared on read), or this hop's value from features()
   uint8_t energy = 128;     // slow energy relative to the long-term average, 128 = average
   uint8_t status = 0;       // proto::kStatus* bits
+  float breakdownRatio = 1.0f; // low-band short / long amplitude (breakdownEnter / breakdownExit compare against it); not in the I2C frame.
+                               // 1.0 (neutral) while there is no signal or the averages have not started
 };
 
 struct Config {
@@ -249,6 +251,7 @@ private:
   bool locked_ = false;
   bool breakdown_ = false;
   float lowShort_ = 0, lowLong_ = 0;
+  float bdRatio_ = 1.0f; // lowShort_ / lowLong_ as of the last hop; 1 without signal
 
   // Beat clock (phase in beats, position within the current beat)
   float phase_ = 0;

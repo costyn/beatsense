@@ -14,7 +14,7 @@
 //
 //   off  field       type      meaning
 //    0   version     u8        kVersion
-//    1   status      u8        bit0 signal present, bit1 beat locked, bit2 clipping
+//    1   status      u8        bit0 signal present, bit1 beat locked, bit2 clipping, bit3 breakdown
 //    2   bpm         u16 Q8.8  tempo
 //    4   beatPhase   u16       0-65535 = position within the current beat (0 = the beat itself)
 //    6   beatCount   u8        wraps; increments each beat (lets the host detect missed beats)
@@ -41,6 +41,9 @@ constexpr size_t kFrameSize = 17;
 constexpr uint8_t kStatusSignal = 1 << 0;  // input is above the noise gate
 constexpr uint8_t kStatusLocked = 1 << 1;  // tempo/beat tracking has locked (confidence passed the hysteresis threshold)
 constexpr uint8_t kStatusClipping = 1 << 2; // input reached full scale recently
+// The kick is gone (the low band is well below its recent average) while there is signal; the tempo and beat clock are held, free-running.
+// Added without a version bump: the frame layout is unchanged and hosts test status bits with masks (a host that predates bit 3 ignores it).
+constexpr uint8_t kStatusBreakdown = 1 << 3;
 
 // Write registers: [reg, value]
 enum Reg : uint8_t {

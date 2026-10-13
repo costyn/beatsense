@@ -138,9 +138,9 @@ static void audioTask(void *) {
     const uint32_t ms = millis();
     if (ms - lastDebug >= DEBUG_PERIOD_MS) {
       lastDebug = ms;
-      Serial.printf("%.3f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", analyzer.frameCount() * 256.0 / SAMPLE_RATE, f.onsets[0], f.onsets[1],
+      Serial.printf("%.3f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.3f\n", analyzer.frameCount() * 256.0 / SAMPLE_RATE, f.onsets[0], f.onsets[1],
                     f.onsets[2], f.bpm, f.beatPhase, f.beatCount, f.beatInBar, f.confidence, f.levels[0], f.levels[1], f.levels[2], f.energy,
-                    f.status);
+                    f.status, (f.status & beatsense::proto::kStatusBreakdown) ? 1u : 0u, f.breakdownRatio);
     }
 #else
     (void)lastDebug;
@@ -155,7 +155,7 @@ void setup() {
 
 #if BEATSENSE_DEBUG_CSV
   Serial.begin(115200);
-  Serial.println("time_s,onset_low,onset_mid,onset_high,bpm,beat_phase,beat_count,beat_in_bar,confidence,level_low,level_mid,level_high,energy,status");
+  Serial.println("time_s,onset_low,onset_mid,onset_high,bpm,beat_phase,beat_count,beat_in_bar,confidence,level_low,level_mid,level_high,energy,status,breakdown,bd_ratio");
 #endif
 
   i2sInit();

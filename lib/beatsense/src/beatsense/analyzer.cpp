@@ -141,15 +141,18 @@ void Analyzer::updateBreakdown(float lowAmp) {
   if (!signal_) {
     breakdown_ = false;
     lowShort_ = lowLong_ = 0;
+    bdRatio_ = 1.0f;
     return;
   }
   if (lowLong_ <= 0) {
     lowShort_ = lowLong_ = lowAmp;
+    bdRatio_ = 1.0f;
     return;
   }
   lowShort_ += bdShortAlpha_ * (lowAmp - lowShort_);
   lowLong_ += (breakdown_ ? bdHeldAlpha_ : bdLongAlpha_) * (lowAmp - lowLong_);
   const float ratio = lowShort_ / fmaxf(lowLong_, 1e-9f);
+  bdRatio_ = ratio;
   if (!breakdown_ && ratio < cfg_.breakdownEnter) breakdown_ = true;
   else if (breakdown_ && ratio > cfg_.breakdownExit) breakdown_ = false;
 }
@@ -658,7 +661,9 @@ void Analyzer::buildOutput() {
   o.beatCount = count;
   o.beatInBar = (uint8_t)((barPos_ + ahead) & 3);
   o.confidence = toU8(confSm_);
-  o.status = (signal_ ? proto::kStatusSignal : 0) | (locked_ ? proto::kStatusLocked : 0) | (clipLeft_ > 0 ? proto::kStatusClipping : 0);
+  o.status = (signal_ ? proto::kStatusSignal : 0) | (locked_ ? proto::kStatusLocked : 0) | (clipLeft_ > 0 ? proto::kStatusClipping : 0) |
+         (breakdown_ ? proto::kStatusBreakdown : 0);
+  o.breakdownRatio = bdRatio_;
 }
 
 Features Analyzer::takeFeatures() {

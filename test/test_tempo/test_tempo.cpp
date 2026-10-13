@@ -285,6 +285,42 @@ void test_breakdown_holds_tempo_and_phase() {
   TEST_ASSERT_TRUE_MESSAGE(maxErrAfter <= 20.0, "phase error > 20 ms 2 s after the kick returned");
 }
 
+// The breakdown status bit and ratio follow the same scenario: set (with the ratio under breakdownEnter) inside the kickless section
+// once the 1 s average has caught up, never set in the groove before it, cleared again shortly after the kicks return.
+void test_breakdown_status_bit_follows_breakdown() {
+  synth::Spec sp;
+  sp.bpm = 140;
+  sp.seconds = 52;
+  sp.noiseRms = 0.005;
+  sp.snareAmp = 0.25;
+  sp.breakFromS = 0.2 + 70 * 60.0 / 140;
+  sp.breakToS = 0.2 + 90 * 60.0 / 140;
+  sp.stabAmp = 0.35;
+  Analyzer a;
+  double setAt = -1, clearedAt = -1, maxRatioInside = 0;
+  int earlySet = 0, insideUnset = 0, lateSet = 0;
+  synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
+    const Features &f = an.features();
+    const bool bit = (f.status & proto::kStatusBreakdown) != 0;
+    if (t < sp.breakFromS && bit) earlySet++;
+    if (bit && setAt < 0) setAt = t - sp.breakFromS;
+    if (t >= sp.breakFromS + 4.0 && t < sp.breakToS) {
+      if (!bit) insideUnset++;
+      maxRatioInside = fmax(maxRatioInside, f.breakdownRatio);
+    }
+    if (t >= sp.breakToS && !bit && clearedAt < 0) clearedAt = t - sp.breakToS;
+    if (t >= sp.breakToS + 4.0 && bit) lateSet++;
+  });
+  printf("    breakdown bit set %.2f s into the breakdown, cleared %.2f s after the kicks return, max ratio inside %.3f\n", setAt, clearedAt,
+         maxRatioInside);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, earlySet, "breakdown bit set during the groove");
+  TEST_ASSERT_TRUE_MESSAGE(setAt >= 0 && setAt < 4.0, "breakdown bit not set within 4 s of the kick dropping out");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, insideUnset, "breakdown bit dropped inside the breakdown");
+  TEST_ASSERT_TRUE_MESSAGE(maxRatioInside < a.config().breakdownEnter, "ratio above breakdownEnter while the bit is set");
+  TEST_ASSERT_TRUE_MESSAGE(clearedAt >= 0 && clearedAt < 4.0, "breakdown bit not cleared within 4 s of the kicks returning");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, lateSet, "breakdown bit set again after the groove returned");
+}
+
 // The reported tempo converges to the true one: the comb's linear interpolation used to round every lag towards whole frames (140 was
 // reported as 139.76), and a first-order PLL cannot correct a period error that the autocorrelation hides.
 void test_tempo_accuracy_after_15s() {
@@ -393,6 +429,7 @@ int main() {
   RUN_TEST(test_downbeat_follows_accent);
   RUN_TEST(test_tempo_change_relocks);
   RUN_TEST(test_breakdown_holds_tempo_and_phase);
+  RUN_TEST(test_breakdown_status_bit_follows_breakdown);
   RUN_TEST(test_tempo_accuracy_after_15s);
   RUN_TEST(test_free_running_drift_over_breakdown);
   RUN_TEST(test_silence_drops_confidence_and_signal);

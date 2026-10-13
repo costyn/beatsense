@@ -59,7 +59,9 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    (a) *Breakdown detector.* Low-band amplitude averaged over 1 s against its own slow average (12 s; 60 s while in a breakdown, so
    the kick returning ends it at once and a permanent change ends it by itself after ~40 s). Ratio < 0.4 (-8 dB) enters, > 0.6 leaves,
    only while there is signal. In a breakdown no tempo change is considered (pending evidence is cleared), the beat clock free-runs
-   on its prediction (no PLL correction from the leftover percussion), and `locked` is held.
+   on its prediction (no PLL correction from the leftover percussion), and `locked` is held. The state is reported as status bit 3
+   (`kStatusBreakdown`; added without a protocol version bump, the layout is unchanged) and the ratio as `Features::breakdownRatio`
+   (not in the frame; 1.0 while there is no signal), which the debug CSV and `analyze_wav` print as `breakdown` and `bd_ratio`.
    (b) *Harmonic ratios need evidence.* A candidate at 3:2, 4:3, 5:4 or 5:3 (either way, +-4%) of the current tempo is the same music
    read at another level, so it must win 32 updates in a row (~8 s), or 12 (~3 s) when the current tempo has no support (raw score
    < `confLow`) and the candidate is strong (raw >= 0.4). Other changes (e.g. 120 -> 128) and octaves keep the 3-update rule.
