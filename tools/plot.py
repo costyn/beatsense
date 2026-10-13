@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: EUPL-1.2
-"""Plot the CSV written by analyze_wav: onsets, tempo, beat phase, confidence, levels, and (if the CSV has them) breakdowns.
+"""Plot the CSV written by analyze_wav: onsets, tempo, beat phase, confidence, levels, and (if the CSV has them) breakdowns and the groove level.
 
     python3 tools/plot.py song.csv [out.png] [--from S] [--to S]
 
@@ -85,8 +85,11 @@ def main():
         ax[5].axhline(BREAKDOWN_ENTER, color="tab:red", linestyle="--", linewidth=0.8, label="enter %.1f" % BREAKDOWN_ENTER)
         ax[5].axhline(BREAKDOWN_EXIT, color="tab:green", linestyle="--", linewidth=0.8, label="exit %.1f" % BREAKDOWN_EXIT)
         ax[5].set_ylim(0, 1.5)
-        ax[5].set_ylabel("low short/long")
-        ax[5].legend(loc="upper right", ncol=2)
+        ax[5].set_ylabel("low short/long, groove")
+        # groove level (0-255 in the frame) drawn as 0-1 on the same axis; CSVs from before it existed simply don't have the column
+        if "groove" in rows[0]:
+            ax[5].plot(t, [g / 255 for g in col("groove")], color="tab:blue", linewidth=1.0, label="groove")
+        ax[5].legend(loc="upper right", ncol=3)
         # shade the breakdown segments (runs of breakdown == 1) in every panel
         flags = [int(float(v)) for v in col("breakdown")]
         start = None

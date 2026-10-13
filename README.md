@@ -129,7 +129,7 @@ The firmware prints the features as CSV at about 20 Hz over USB serial (`BEATSEN
 
 ```
 g++ -std=c++14 -O2 -Iinclude -Ilib/beatsense/src -Itest/support tools/analyze_wav/main.cpp lib/beatsense/src/beatsense/analyzer.cpp -o analyze_wav
-./analyze_wav song.wav > song.csv            # per-hop CSV: time, onsets, bpm, phase, confidence, levels, energy, status, breakdown, bd_ratio
+./analyze_wav song.wav > song.csv            # per-hop CSV: time, onsets, bpm, phase, confidence, levels, energy, status, breakdown, bd_ratio, groove
 ./analyze_wav song.wav --gain-db -20 > quiet.csv
 ./analyze_wav song.wav --summary             # short text report instead of the CSV (see below)
 ./analyze_wav song.wav --clicks clicks.wav   # the song with a click on every predicted beat
@@ -144,11 +144,11 @@ python3 tools/plot.py song.csv --from 110 --to 125   # zoom; windows under 30 s 
 - `--summary` prints: time to first lock, % of time locked, tempo segments (start-end, median BPM; wobbles under 2 s are merged),
   the number of bar re-alignments (and when, up to 10), the standard deviation of the beat period after the first lock (ms),
   confidence min / median after the first lock, for each onset and level output the % of frames at 255 and the 50th / 95th percentile
-  (frames with signal only), and energy min / median / max, plus the breakdown segments (start-end, duration) and their count. Short enough to paste into a chat.
+  (frames with signal only), and energy min / median / max, plus the breakdown segments (start-end, duration) and their count, and the groove level over the locked frames (p10, p50, % of the time below 0.3). Short enough to paste into a chat.
 - `plot.py --from S --to S` zooms into a window. Onsets and levels are thin, semi-transparent lines drawn low, mid, high; in windows
   under 30 s the predicted beats (where `beat_phase` wraps) are vertical lines in every panel. Breakdown segments are shaded in every
-  panel and a bottom panel shows `bd_ratio` against the enter / exit thresholds (older CSVs without the two columns still plot).
-- The CSV's last two columns: `breakdown` (the status bit, 0/1) and `bd_ratio` (low-band short / long amplitude; 1.000 without signal).
+  panel and a bottom panel shows `bd_ratio` against the enter / exit thresholds (older CSVs without the two columns still plot), with the `groove` level (0-1) drawn in the same panel when the CSV has it.
+- The CSV's last three columns: `breakdown` (the status bit, 0/1), `bd_ratio` (low-band short / long amplitude; 1.000 without signal) and `groove` (0-255, the frame's groove level).
 
 WAV input: 22050 Hz (used as is) or 44100 Hz (decimated by 2), 16/24/32-bit PCM or 32-bit float, mono or stereo (averaged).
 Convert anything else: `ffmpeg -i song.mp3 -ac 1 -ar 22050 song.wav`. Put recordings in `test/audio/` (git-ignored).

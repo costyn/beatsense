@@ -153,6 +153,21 @@ void summary(const std::vector<Row> &rows, const std::vector<double> &beatTimes,
     }
     printf("  %-10s %5.1f%%  p50 %3.0f  p95 %3.0f\n", names[k], v.empty() ? 0.0 : 100.0 * at255 / v.size(), pct(v, 50), pct(v, 95));
   }
+  // Groove level over the locked frames: the percentiles say how much of the track is "full groove" (p50) and how often it dips (p10);
+  // the fraction below 0.3 (77/255) is the time the host would run its beat effects at 30% or less
+  {
+    std::vector<double> gr;
+    size_t low = 0;
+    for (const Row &r : rows) {
+      if (!(r.f.status & proto::kStatusLocked)) continue;
+      gr.push_back(r.f.groove);
+      if (r.f.groove < 77) low++;
+    }
+    if (gr.empty()) printf("groove: never locked\n");
+    else
+      printf("groove over locked frames (0-255): p10 %.0f, p50 %.0f, below 0.3: %.1f%% of the time\n", pct(gr, 10), pct(gr, 50),
+             100.0 * low / gr.size());
+  }
   std::vector<double> en;
   for (const Row &r : rows) {
     if (r.f.status & proto::kStatusSignal) en.push_back(r.f.energy);
@@ -230,16 +245,16 @@ int main(int argc, char **argv) {
   bool havePrev = false;
   if (csv) {
     fprintf(csv, "time_s,onset_low,onset_mid,onset_high,bpm,beat_phase,beat_count,beat_in_bar,confidence,level_low,level_mid,level_high,"
-                 "energy,status,breakdown,bd_ratio\n");
+                 "energy,status,breakdown,bd_ratio,groove\n");
   }
   for (size_t i = 0; i + hop <= slots.size(); i += hop) {
     a.process(&slots[i], hop);
     const beatsense::Features &f = a.features();
     const double t = (double)(i + hop) / fs;
     if (csv) {
-      fprintf(csv, "%.4f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.3f\n", t, f.onsets[0], f.onsets[1], f.onsets[2], f.bpm, f.beatPhase,
+      fprintf(csv, "%.4f,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.3f,%u\n", t, f.onsets[0], f.onsets[1], f.onsets[2], f.bpm, f.beatPhase,
               f.beatCount, f.beatInBar, f.confidence, f.levels[0], f.levels[1], f.levels[2], f.energy, f.status,
-              (f.status & beatsense::proto::kStatusBreakdown) ? 1u : 0u, f.breakdownRatio);
+              (f.status & beatsense::proto::kStatusBreakdown) ? 1u : 0u, f.breakdownRatio, f.groove);
     }
     if (wantSummary) rows.push_back(Row{t, f});
     if (a.barRealignments() != prevRealigns) {
