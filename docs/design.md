@@ -68,8 +68,9 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
    0.62-0.71 from 5:03 to 5:15 (something returns in the low band before the kick). In the groove the ratio stays ~0.9-1.1 with brief
    dips not below ~0.8. Replaying the recorded ratio with exit 0.8 gives 2:02.2-2:30.1 and 4:47.5-5:14.8 (matches by ear). Short raw
    detections during fills (3:14.4 for 0.6 s, 4:28.4 for 1.6 s) remain; they are left to the host (Lumifera fades fx intensity
-   smoothly, so brief ones are harmless). The lock held through both breaks; confidence fell to 4-72 during the first. Test:
-   `test_breakdown_persists_with_low_band_remnant` (bass note at ~65% of the groove's low amplitude).
+   smoothly, so brief ones are harmless). The lock held through both breaks; confidence fell to 4-72 during the first. Tests:
+   `test_breakdown_persists_with_low_band_remnant` (bass note returning at ~70% of the groove's low amplitude before the kick; fails with
+   exit 0.6), `test_breakdown_ends_after_permanent_change` (kick never returns: the held average ends the breakdown after ~40 s).
    (b) *Harmonic ratios need evidence.* A candidate at 3:2, 4:3, 5:4 or 5:3 (either way, +-4%) of the current tempo is the same music
    read at another level, so it must win 32 updates in a row (~8 s), or 12 (~3 s) when the current tempo has no support (raw score
    < `confLow`) and the candidate is strong (raw >= 0.4). Other changes (e.g. 120 -> 128) and octaves keep the 3-update rule.
