@@ -29,6 +29,9 @@ struct Features {
   uint8_t onsets[3] = {0, 0, 0}; // peak-hold since the last takeFeatures() (cleared on read), or this hop's value from features()
   uint8_t energy = 128;     // slow energy relative to the long-term average, 128 = average
   uint8_t status = 0;       // proto::kStatus* bits
+  uint8_t groove = 0;       // kick-driven groove present right now (docs/design.md, "Groove level"); 0 without signal
+  float breakdownRatio = 1.0f; // low-band short / long amplitude (breakdownEnter / breakdownExit compare against it); not in the I2C frame.
+                               // 1.0 (neutral) while there is no signal or the averages have not started
 };
 
 struct Config {
@@ -109,7 +112,23 @@ struct Config {
   float breakdownLongS = 12.0f;     // ...against its slow average (outside a breakdown)
   float breakdownHeldLongS = 60.0f; // slow average time constant inside a breakdown, so a permanent change ends it after ~40 s
   float breakdownEnter = 0.4f;      // short / long amplitude ratio below which a breakdown starts (-8 dB)
-  float breakdownExit = 0.6f;       // ...and above which it ends
+  float breakdownExit = 0.8f;       // ...and above which it ends
+
+  // Groove level (0-255 in the frame): a raw measure of how much kick-driven groove is present right now, the product of two ramps:
+  // the low band is back (breakdown ratio) and it repeats at the beat period (correlation of the low-band amplitude with itself one
+  // beat earlier). No smoothing beyond the correlation's own time constant: the host does the easing.
+  float grooveRatioLow = 0.52f;   // breakdown ratio mapped to 0 (a quiet bassline brings the low band back only partly)...
+  float grooveRatioHigh = 0.9f;   // ...and to 1 (linear in between)
+  float grooveHighpassS = 0.25f;  // slow mean subtracted from the low-band amplitude before correlating (leaves the kick modulation)
+  float grooveCorrS = 0.5f;       // time constant of the correlation sums (two beats at 120 BPM)
+  float grooveCorrLow = 0.3f;     // correlation coefficient mapped to 0...
+  float grooveCorrHigh = 0.7f;    // ...and to 1
+  float grooveThirdLow = 0.3f;    // correlation at a third of a beat mapped to 0... (a rolling bass, 3 pulses per beat, repeats at that lag; a kick
+  float grooveThirdHigh = 0.7f;   // ...and to 1, which takes the groove away (1 - ramp) does not)
+  float grooveFloorRel = 0.05f;   // the modulation's amplitude never counts for less than this fraction of the slow low-band average
+                                  // (lowLong_): relative, so the groove does not depend on the input level (an absolute floor zeroed it on
+                                  // a room mic). It only stops a nearly constant low band from correlating its own wiggles
+  float grooveFloorAbs = 3e-5f;   // ...and never less than this amplitude (-90 dBFS, near the INMP441 noise), only to avoid dividing by ~0
 
   // --- Beat phase ---
   uint16_t phaseEveryFrames = 4; // measurement + PLL correction cadence (~46 ms)
@@ -182,6 +201,7 @@ private:
   void updateTempo();
   void estimateTempo(float &bpm, float &score, float &rawScore, float &currentRaw);
   void updateBreakdown(float lowAmp);
+  void updateGroove(float lowAmp);
   float continuityGain(float bpm) const;
   bool isHarmonicRatio(float cand, float cur) const;
   void measurePhase();
@@ -249,6 +269,18 @@ private:
   bool locked_ = false;
   bool breakdown_ = false;
   float lowShort_ = 0, lowLong_ = 0;
+  uint32_t bdCount_ = 0; // hops since the signal came on (the slow average is a plain average until its window has filled)
+  float bdRatio_ = 1.0f; // lowShort_ / lowLong_ as of the last hop; 1 without signal
+
+  // Groove level: low-band amplitude with its slow mean removed, kept for one beat (the longest period is 60 / bpmMin = 0.75 s = 65 frames)
+  static constexpr size_t kGrooveHist = 128;
+  float grooveHist_[kGrooveHist] = {0};
+  size_t grooveHead_ = 0;      // index of the newest entry
+  float grooveMean_ = 0;
+  bool grooveInit_ = false;    // grooveMean_ holds a value (reset when the signal drops)
+  float grooveRxy_ = 0, grooveRxx_ = 0, grooveRyy_ = 0; // exponentially weighted sums of x*x(-beat), x*x, x(-beat)*x(-beat)
+  float grooveTxy_ = 0, grooveTyy_ = 0;
+  uint8_t grooveOut_ = 0;
 
   // Beat clock (phase in beats, position within the current beat)
   float phase_ = 0;
@@ -278,7 +310,8 @@ private:
   Features out_;
 
   // Derived time constants (per hop)
-  float levelDecay_, agcAttack_, agcDecay_, fluxMeanAlpha_, onsetPeakDecay_, energyShortAlpha_, confRiseAlpha_, confFallAlpha_, bdShortAlpha_, bdLongAlpha_, bdHeldAlpha_;
+  float levelDecay_, agcAttack_, agcDecay_, fluxMeanAlpha_, onsetPeakDecay_, energyShortAlpha_, confRiseAlpha_, confFallAlpha_;
+  float bdShortAlpha_, bdLongAlpha_, bdHeldAlpha_, grooveHpAlpha_, grooveCorrAlpha_;
 };
 
 // Frame as sent over I2C
@@ -296,6 +329,7 @@ inline proto::Frame toFrame(const Features &f) {
     fr.onset[i] = f.onsets[i];
   }
   fr.energy = f.energy;
+  fr.groove = f.groove;
   return fr;
 }
 

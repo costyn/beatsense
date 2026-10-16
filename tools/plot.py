@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: EUPL-1.2
-"""Plot the CSV written by analyze_wav: onsets, tempo, beat phase, confidence, levels.
+"""Plot the CSV written by analyze_wav: onsets, tempo, beat phase, confidence, levels, and (if the CSV has them) breakdowns and the groove level.
 
     python3 tools/plot.py song.csv [out.png] [--from S] [--to S]
 
@@ -10,6 +10,10 @@ opening a window.
 """
 import argparse
 import csv
+
+# Breakdown thresholds of the analyzer: Config::breakdownEnter / breakdownExit in lib/beatsense/src/beatsense/analyzer.h
+BREAKDOWN_ENTER = 0.4
+BREAKDOWN_EXIT = 0.8
 
 
 def main():
@@ -46,7 +50,10 @@ def main():
     phase = col("beat_phase")
     ticks = [t[i] for i in range(1, len(t)) if phase[i] < phase[i - 1] - 32768 and t[i] >= lo]
 
-    fig, ax = plt.subplots(5, 1, sharex=True, figsize=(12, 9))
+    # breakdown columns are missing in captures from before they existed
+    has_bd = "breakdown" in rows[0] and "bd_ratio" in rows[0]
+    npanels = 6 if has_bd else 5
+    fig, ax = plt.subplots(npanels, 1, sharex=True, figsize=(12, 9 if not has_bd else 10.5))
     # fixed draw order low -> mid -> high, thin and transparent so overlapping series stay readable
     for name, color, z in (("onset_low", "tab:red", 1), ("onset_mid", "tab:green", 2), ("onset_high", "tab:blue", 3)):
         ax[0].plot(t, col(name), label=name, color=color, linewidth=0.6, alpha=0.6, zorder=z)
@@ -72,7 +79,29 @@ def main():
         ax[4].plot(t, col(name), label=name, color=color, linewidth=0.6, alpha=0.6, zorder=z)
     ax[4].set_ylabel("levels")
     ax[4].legend(loc="upper right", ncol=3)
-    ax[4].set_xlabel("time (s)")
+
+    if has_bd:
+        ax[5].plot(t, col("bd_ratio"), color="tab:orange", linewidth=0.8)
+        ax[5].axhline(BREAKDOWN_ENTER, color="tab:red", linestyle="--", linewidth=0.8, label="enter %.1f" % BREAKDOWN_ENTER)
+        ax[5].axhline(BREAKDOWN_EXIT, color="tab:green", linestyle="--", linewidth=0.8, label="exit %.1f" % BREAKDOWN_EXIT)
+        ax[5].set_ylim(0, 1.5)
+        ax[5].set_ylabel("low short/long, groove")
+        # groove level (0-255 in the frame) drawn as 0-1 on the same axis; CSVs from before it existed simply don't have the column
+        if "groove" in rows[0]:
+            ax[5].plot(t, [g / 255 for g in col("groove")], color="tab:blue", linewidth=1.0, label="groove")
+        ax[5].legend(loc="upper right", ncol=3)
+        # shade the breakdown segments (runs of breakdown == 1) in every panel
+        flags = [int(float(v)) for v in col("breakdown")]
+        start = None
+        for i, fl in enumerate(flags + [0]):
+            if fl and start is None:
+                start = t[i]
+            elif not fl and start is not None:
+                end = t[i] if i < len(t) else t[-1]
+                for a in ax:
+                    a.axvspan(start, end, color="tab:orange", alpha=0.12, linewidth=0, zorder=0)
+                start = None
+    ax[-1].set_xlabel("time (s)")
 
     if short:
         for a in ax:

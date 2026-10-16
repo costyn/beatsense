@@ -8,3 +8,4 @@ test/audio/*.wav
 !test/audio/fixture_*.wav
 __pycache__/
 temp
+tracks/

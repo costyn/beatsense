@@ -4,7 +4,7 @@ Firmware and DSP for an audio-analysis daughterboard: an **M5Stack StampS3** (ES
 **tempo, beat phase, band levels, onsets and a slow energy value** over **I2C** to an LED controller (built for Lumifera, usable by any I2C host).
 The analysis is a portable C++ library with no Arduino dependency, so it is unit-tested and tuned on a laptop, with synthetic audio or real WAV files.
 
-State, not events: the host polls a 17-byte frame and gets the beat phase _as of the moment of the read_, so the poll rate only affects smoothness.
+State, not events: the host polls an 18-byte frame and gets the beat phase _as of the moment of the read_, so the poll rate only affects smoothness.
 
 ## Status (2026-10-10)
 
@@ -12,8 +12,6 @@ State, not events: the host polls a 17-byte frame and gets the beat phase _as of
   Locks to psytrance (140-145 BPM) and techno (130-140 BPM) within a few beats; Lumifera's beat sync needs no latency trim.
   The lock can drop during long breakdowns (accepted).
 - **Not done yet**:
-  - A `breakdown` status bit (bit 3) in the frame: the analyser already detects breakdowns internally; Lumifera wants it for a
-    "breakdown mode" (see Lumifera's `docs/extras/audio-processing-plan.md`, Status section).
   - Onset _events_ (kick/snare/hat flags): the frame carries onset strengths only; the host derives events itself for now.
   - Config/tap registers (0x10-0x13) exist but no host writes them yet.
   - `esp-dsp` FFT backend (`BEATSENSE_FFT_CLASS` seam): only if profiling ever shows a need; the own 512-point FFT is cheap.
@@ -83,15 +81,15 @@ Notes:
 WS is on G3, a strapping pin (JTAG source select). It only matters with a specific eFuse setting, so it's fine on a stock StampS3;
 the prototype uses it.
 
-## I2C protocol (version 1)
+## I2C protocol (version 2)
 
 Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined in [`include/beatsense_protocol.h`](include/beatsense_protocol.h)
 (MIT licensed, with encode/decode/CRC helpers). **Any read returns this frame from offset 0**; multi-byte fields are little-endian.
 
 | Offset | Field               | Type     | Meaning                                                                                       |
 | ------ | ------------------- | -------- | --------------------------------------------------------------------------------------------- |
-| 0      | `version`           | u8       | protocol version (1)                                                                          |
-| 1      | `status`            | u8       | bit0 signal present, bit1 beat locked, bit2 clipping                                          |
+| 0      | `version`           | u8       | protocol version (2)                                                                          |
+| 1      | `status`            | u8       | bit0 signal present, bit1 beat locked, bit2 clipping, bit3 breakdown (kick gone, tempo held)   |
 | 2      | `bpm`               | u16 Q8.8 | tempo                                                                                         |
 | 4      | `beatPhase`         | u16      | 0-65535 = position within the current beat at the time of the read (0 = the beat)             |
 | 6      | `beatCount`         | u8       | wraps; increments each beat                                                                   |
@@ -100,7 +98,8 @@ Slave, 7-bit address **0x42** (configurable in `src/config.h`), 400 kHz. Defined
 | 9      | `levelLow/Mid/High` | 3 x u8   | AGC-normalised levels                                                                         |
 | 12     | `onsetLow/Mid/High` | 3 x u8   | peak onset strength since the previous read (cleared on read)                                 |
 | 15     | `energy`            | u8       | slow (~8 bar) energy relative to the long-term average, 128 = average                         |
-| 16     | `crc`               | u8       | CRC-8 (poly 0x07, init 0) over bytes 0-15                                                     |
+| 16     | `groove`            | u8       | 0-255: how much kick-driven groove is present right now (a state, raw, see design.md)         |
+| 17     | `crc`               | u8       | CRC-8 (poly 0x07, init 0) over bytes 0-16                                                     |
 
 Write `[register, value]`:
 
@@ -111,7 +110,10 @@ Write `[register, value]`:
 | 0x12 latency offset | int8 ms, shifts `beatPhase` ahead (positive) to cover the host's display latency |
 | 0x13 tap            | "a beat is now": sets the phase, two taps set the tempo                          |
 
-The CRC and version byte let a host reject garbage when no board is fitted. Tempo is folded into 80-170 BPM (174 is reported as 87).
+The CRC and version byte let a host reject garbage when no board is fitted. Version 2 added `groove` and moved the CRC from byte 16 to
+17 (the frame grew from 17 to 18 bytes); a v1 frame is rejected by a v2 host and vice versa.
+`groove` is 0 without signal, a breakdown or a steady kick, and 255 in a full groove; it reacts within about a second and is deliberately
+not smoothed or debounced, so hosts should ease it themselves (slowly down, quickly up). Tempo is folded into 80-170 BPM (174 is reported as 87).
 
 ## Build and test
 
@@ -127,7 +129,7 @@ The firmware prints the features as CSV at about 20 Hz over USB serial (`BEATSEN
 
 ```
 g++ -std=c++14 -O2 -Iinclude -Ilib/beatsense/src -Itest/support tools/analyze_wav/main.cpp lib/beatsense/src/beatsense/analyzer.cpp -o analyze_wav
-./analyze_wav song.wav > song.csv            # per-hop CSV: time, onsets, bpm, phase, confidence, levels, energy, status
+./analyze_wav song.wav > song.csv            # per-hop CSV: time, onsets, bpm, phase, confidence, levels, energy, status, breakdown, bd_ratio, groove
 ./analyze_wav song.wav --gain-db -20 > quiet.csv
 ./analyze_wav song.wav --summary             # short text report instead of the CSV (see below)
 ./analyze_wav song.wav --clicks clicks.wav   # the song with a click on every predicted beat
@@ -138,13 +140,15 @@ python3 tools/plot.py song.csv --from 110 --to 125   # zoom; windows under 30 s 
 
 - `--clicks out.wav` writes the input (channels averaged, original sample rate, 16-bit) with a short click on each beat the analyzer
   predicts, using `beatCount` / `beatPhase` / `beatInBar` exactly as a host reading the frame would see them: a high, loud click on
-  beatInBar 0 and a lower, quieter one on 1-3. Listen to check sync, tempo holds through breakdowns and where the downbeat lands.
+  beatInBar 0 and a lower, quieter one on 1-3; while the breakdown bit is set the clicks are lower still (880 / 550 Hz). Listen to check sync, tempo holds through breakdowns and where the downbeat lands.
 - `--summary` prints: time to first lock, % of time locked, tempo segments (start-end, median BPM; wobbles under 2 s are merged),
   the number of bar re-alignments (and when, up to 10), the standard deviation of the beat period after the first lock (ms),
   confidence min / median after the first lock, for each onset and level output the % of frames at 255 and the 50th / 95th percentile
-  (frames with signal only), and energy min / median / max. Short enough to paste into a chat.
+  (frames with signal only), and energy min / median / max, plus the breakdown segments (start-end, duration) and their count, and the groove level over the locked frames (p10, p50, % of the time below 0.3). Short enough to paste into a chat.
 - `plot.py --from S --to S` zooms into a window. Onsets and levels are thin, semi-transparent lines drawn low, mid, high; in windows
-  under 30 s the predicted beats (where `beat_phase` wraps) are vertical lines in every panel.
+  under 30 s the predicted beats (where `beat_phase` wraps) are vertical lines in every panel. Breakdown segments are shaded in every
+  panel and a bottom panel shows `bd_ratio` against the enter / exit thresholds (older CSVs without the two columns still plot), with the `groove` level (0-1) drawn in the same panel when the CSV has it.
+- The CSV's last three columns: `breakdown` (the status bit, 0/1), `bd_ratio` (low-band short / long amplitude; 1.000 without signal) and `groove` (0-255, the frame's groove level).
 
 WAV input: 22050 Hz (used as is) or 44100 Hz (decimated by 2), 16/24/32-bit PCM or 32-bit float, mono or stereo (averaged).
 Convert anything else: `ffmpeg -i song.mp3 -ac 1 -ar 22050 song.wav`. Put recordings in `test/audio/` (git-ignored).

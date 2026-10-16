@@ -40,6 +40,8 @@ struct Spec {
   double breakFromS = 0;
   double breakToS = 0;
   double stabAmp = 0;
+  double bassAmp = 0;   // steady 60 Hz sine from bassFromS to breakToS (a bass note that returns before the kick does)
+  double bassFromS = 0;
   // Bar accents. Beat b is a downbeat when (b - shift) % 4 == 0, where shift = downShiftBy from beat downShiftAtBeat on (a new
   // section whose accents sit elsewhere in the bar). On downbeats the kick is scaled by downKick and a crash (noise burst, 0.12 s
   // decay) of crashAmp is added. kickJitter varies every kick's amplitude by a random +-fraction (separate RNG).
@@ -120,6 +122,11 @@ inline std::vector<float> render(const Spec &sp) {
         if (t < 0) continue;
         x[i] += (float)(sp.stabAmp * exp(-t / 0.04) * (0.6 * sin(2 * M_PI * 1300 * t) + 0.3 * sin(2 * M_PI * 2100 * t) + 0.3 * sr.uniform()));
       }
+    }
+  }
+  if (sp.bassAmp > 0) {
+    for (size_t i = (size_t)(sp.bassFromS * kFs); i < n && i < (size_t)(sp.breakToS * kFs); i++) {
+      x[i] += (float)(sp.bassAmp * sin(2 * M_PI * 60.0 * i / kFs));
     }
   }
   for (size_t i = 0; i < n; i++) x[i] += (float)(sp.noiseRms * 1.7320508 * rng.uniform()); // uniform [-1,1) has rms 1/sqrt(3)
