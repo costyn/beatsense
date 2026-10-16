@@ -166,14 +166,16 @@ void Analyzer::updateBreakdown(float lowAmp) {
   else if (breakdown_ && ratio > cfg_.breakdownExit) breakdown_ = false;
 }
 
-// Groove level = (the low band is back) x (the low band repeats at the beat period). The first factor is the breakdown ratio; the second
+// Groove level = (the low band is back) x (the low band repeats at the beat period) x (it does not also repeat at a third of a beat). The first factor is the breakdown ratio; the second
 // is the correlation coefficient between the low-band amplitude, mean-removed, and the same signal one beat earlier, from exponentially
 // weighted sums: a steady kick (and the bass that goes with it) repeats every beat, a rumble, a bass note, or a pattern at another
-// metrical level (3 against 2) does not, whatever its level. O(1) per hop. Without a tempo there is no beat period and no groove.
+// metrical level (3 against 2) does not, whatever its level. A rolling bass (3 pulses per beat) repeats at the beat too, but also at a third
+// of a beat, which a kick does not: that second correlation takes the groove away. O(1) per hop. Without a tempo there is no beat period and no groove.
 void Analyzer::updateGroove(float lowAmp) {
   if (!signal_) {
     grooveInit_ = false;
     grooveRxy_ = grooveRxx_ = grooveRyy_ = 0;
+    grooveTxy_ = grooveTyy_ = 0;
     grooveOut_ = 0;
     return;
   }
@@ -198,12 +200,21 @@ void Analyzer::updateGroove(float lowAmp) {
   grooveRxy_ += grooveCorrAlpha_ * (x * y - grooveRxy_);
   grooveRxx_ += grooveCorrAlpha_ * (x * x - grooveRxx_);
   grooveRyy_ += grooveCorrAlpha_ * (y * y - grooveRyy_);
+  const float lagT = lag / 3.0f;
+  const size_t ti = (size_t)lagT;
+  const float ta = grooveHist_[(grooveHead_ + kGrooveHist - ti) % kGrooveHist];
+  const float tb = grooveHist_[(grooveHead_ + kGrooveHist - ti - 1) % kGrooveHist];
+  const float yt = ta + (lagT - (float)ti) * (tb - ta);
+  grooveTxy_ += grooveCorrAlpha_ * (x * yt - grooveTxy_);
+  grooveTyy_ += grooveCorrAlpha_ * (yt * yt - grooveTyy_);
   const float floorAmp = fmaxf(cfg_.grooveFloorRel * lowLong_, cfg_.grooveFloorAbs); // relative: level independent
   const float f2 = floorAmp * floorAmp;
   const float corr = fmaxf(grooveRxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveRyy_), f2);
   const float back = (bdRatio_ - cfg_.grooveRatioLow) / (cfg_.grooveRatioHigh - cfg_.grooveRatioLow);
   const float steady = (corr - cfg_.grooveCorrLow) / (cfg_.grooveCorrHigh - cfg_.grooveCorrLow);
-  grooveOut_ = toU8(clampf(back, 0.0f, 1.0f) * clampf(steady, 0.0f, 1.0f));
+  const float cthird = fmaxf(grooveTxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveTyy_), f2);
+  const float rolling = (cthird - cfg_.grooveThirdLow) / (cfg_.grooveThirdHigh - cfg_.grooveThirdLow);
+  grooveOut_ = toU8(clampf(back, 0.0f, 1.0f) * clampf(steady, 0.0f, 1.0f) * (1.0f - clampf(rolling, 0.0f, 1.0f)));
 }
 
 void Analyzer::processFrame() {

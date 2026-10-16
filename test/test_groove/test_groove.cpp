@@ -94,6 +94,28 @@ void test_groove_stays_low_with_low_band_remnant() {
   TEST_ASSERT_TRUE_MESSAGE(g.riseAt >= 0 && g.riseAt <= 1.0, "groove not back to 0.85 within 1 s of the kicks returning");
 }
 
+// A quiet rolling bassline (3 pulses per beat, no kick) after a groove: it repeats every beat, but also every third of a beat, which a kick
+// does not. Low-band energy that is not the groove: it must stay low. Then the kicks return and the groove comes back.
+void test_groove_stays_low_with_a_rolling_bass() {
+  synth::Spec sp = breakSpec(32);
+  std::vector<float> x = synth::render(sp);
+  const double third = 60.0 / sp.bpm / 3.0;
+  for (double t = sp.breakFromS + 4.0; t < sp.breakToS - 1.0; t += third) { // from 4 s into the break; 60 Hz pulses, 60 ms decay
+    for (size_t i = (size_t)(t * synth::kFs); i < x.size() && i < (size_t)((t + 0.3) * synth::kFs); i++) {
+      const double u = (double)i / synth::kFs - t;
+      x[i] += (float)(0.15 * exp(-u / 0.06) * sin(2 * M_PI * 60.0 * u));
+    }
+  }
+  Analyzer a;
+  int maxV = 0;
+  synth::run(a, x, [&](double t, Analyzer &an) {
+    if (t >= sp.breakFromS + 7.0 && t < sp.breakToS - 1.0 && an.features().groove > maxV)
+      maxV = an.features().groove;
+  });
+  printf("    max groove during the rolling bass: %d\n", maxV);
+  TEST_ASSERT_TRUE_MESSAGE(maxV <= 0.3 * 255, "groove above 0.3 while only a rolling bassline plays");
+}
+
 // After the kick returns the groove is back to 0.85 within a second (one beat for the correlation to see a repeat, plus its time constant)
 void test_groove_rises_within_a_second_of_the_kick() {
   const synth::Spec sp = breakSpec();
@@ -201,6 +223,7 @@ int main() {
   RUN_TEST(test_groove_full_in_steady_groove);
   RUN_TEST(test_groove_drops_in_kickless_breakdown);
   RUN_TEST(test_groove_stays_low_with_low_band_remnant);
+  RUN_TEST(test_groove_stays_low_with_a_rolling_bass);
   RUN_TEST(test_groove_rises_within_a_second_of_the_kick);
   RUN_TEST(test_groove_dips_on_a_one_bar_drop);
   RUN_TEST(test_groove_without_signal_and_level_independent);

@@ -133,10 +133,17 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
     about 10% in a breakdown, partly during a build. It does its own easing and fires its own "drop" event on the first kick, so this is
     a **raw, honest 0-255 measure of how much kick-driven groove is present right now**, not smoothed or debounced, reacting within about a
     second. A state like `levels` and `energy`, not peak-held like the onsets. 0 without signal or without a tempo. It is the product of
-    two ramps, per hop, O(1):
+    ramps, per hop, O(1):
     - *The low band is back*: the breakdown ratio of stage 7 (low-band amplitude averaged over 1 s / its slow average), linear
-      `grooveRatioLow` 0.3 -> 0, `grooveRatioHigh` 0.9 -> 1. This separates the groove from a passage that still repeats at the beat but
+      `grooveRatioLow` 0.52 -> 0, `grooveRatioHigh` 0.9 -> 1 (0.3 before: a quiet bassline returning in a long build brought the ratio to
+      0.6-0.7 and the groove to 0.4; at 0.52 it stays below 0.3, 0.55 already breaks the synthetic steady-groove tests). This separates the groove from a passage that still repeats at the beat but
       has lost its kick (a bass line, the other percussion; Concrete's second break has such a remnant).
+    - *Not a rolling bass*: a bassline of 3 pulses per beat repeats at the beat period too, so it passes the steadiness test below, and its
+      ratio can be well above 1 (Satory 5:14.5-5:16 reached 1.0 groove this way). It also repeats at a **third of a beat**, a kick does not
+      (measured: 0.6-0.8 there, 0 in a steady groove). The same correlation machinery at lag `beat / 3` (`Txy`, `Tyy`, normalised by
+      `sqrt(Rxx * Tyy)`), mapped `grooveThirdLow` 0.3 -> 0, `grooveThirdHigh` 0.7 -> 1, and the groove is multiplied by one minus that.
+      Cost: a few multiplies per hop. Risk: a kick pattern with strong off-beat bass at 1/3 beat (not in the three reference tracks; their
+      steady p10 is unchanged) would be taken for a rolling bass.
     - *The low band repeats at the beat period* (steadiness): the correlation coefficient between the low-band amplitude (the group amplitude
       before the AGC, so level-independent) and the same signal one beat earlier (`60 / clockBpm`, linear interpolation), both with a slow
       mean removed (`grooveHighpassS` 0.25 s, leaves the kick modulation). Exponentially weighted sums `Rxy`, `Rxx`, `Ryy` (`grooveCorrS`
