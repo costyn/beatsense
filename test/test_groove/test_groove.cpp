@@ -112,7 +112,8 @@ void test_groove_dips_on_a_one_bar_drop() {
   TEST_ASSERT_TRUE_MESSAGE(g.riseAt >= 0 && g.riseAt <= 1.2, "groove not back after the one-bar drop");
 }
 
-// No signal, no groove; and a level change of 25 dB changes nothing (the correlation is normalised and the ratio is relative)
+// No signal, no groove; and the level does not matter: the groove is full in a steady groove down to the signal gate. The floor of the
+// correlation's denominator is relative to the low band's slow average (an absolute one zeroed the groove on the room mic of the lamp).
 void test_groove_without_signal_and_level_independent() {
   Analyzer silent;
   synth::Spec quiet;
@@ -123,24 +124,76 @@ void test_groove_without_signal_and_level_independent() {
   synth::feed(silent, synth::render(quiet));
   TEST_ASSERT_EQUAL_UINT8(0, silent.features().groove);
 
-  int vMin[2];
-  for (int k = 0; k < 2; k++) {
+  const double gains[] = {0.0, -25.0, -45.0, -55.0, -65.0};
+  int vMin[5], withSignal[5];
+  for (int k = 0; k < 5; k++) {
     synth::Spec sp;
     sp.bpm = 128;
     sp.seconds = 30;
     sp.snareAmp = 0.25;
     sp.noiseRms = 0.005;
-    sp.gainDb = k ? -25.0 : 0.0;
+    sp.gainDb = gains[k];
     Analyzer a;
-    int m = 255;
+    int m = 255, sig = 0;
     synth::run(a, synth::render(sp), [&](double t, Analyzer &an) {
-      if (t >= 10.0)
+      if (t >= 10.0) {
         m = an.features().groove < m ? an.features().groove : m;
+        sig += (an.features().status & proto::kStatusSignal) ? 1 : 0;
+      }
     });
     vMin[k] = m;
+    withSignal[k] = sig;
   }
-  printf("    lowest groove after 10 s: %d at 0 dB, %d at -25 dB\n", vMin[0], vMin[1]);
+  printf("    lowest groove after 10 s: %d (0 dB) %d (-25) %d (-45) %d (-55) %d (-65, signal frames %d)\n", vMin[0], vMin[1], vMin[2], vMin[3],
+         vMin[4], withSignal[4]);
   TEST_ASSERT_TRUE_MESSAGE(vMin[1] >= 0.85 * 255, "groove below 0.85 at -25 dB");
+  TEST_ASSERT_TRUE_MESSAGE(vMin[2] >= 0.85 * 255, "groove below 0.85 at -45 dB");
+  TEST_ASSERT_TRUE_MESSAGE(vMin[3] >= 0.85 * 255, "groove below 0.85 at -55 dB");
+  // Only where the signal gate lets the music through (the synthetic groove is ~-25 dBFS RMS, the gate opens at -62)
+  if (withSignal[4] > 0)
+    TEST_ASSERT_TRUE_MESSAGE(vMin[4] >= 0.85 * 255, "groove below 0.85 at -65 dB");
+}
+
+// Noise and nothing else, just above the signal gate: white, and low-passed "room tone" (rumble, 6 dB/oct above ~150 Hz): no groove. The
+// low band of noise fluctuates a lot, but not at the beat period, so the correlation stays low whatever the floor is.
+void test_groove_stays_low_in_noise() {
+  for (int k = 0; k < 2; k++) {
+    synth::Spec sp;
+    sp.seconds = 60;
+    sp.kickAmp = 0;
+    sp.hats = false;
+    sp.noiseRms = 0.001; // -60 dBFS RMS, the gate opens at -62
+    std::vector<float> x = synth::render(sp);
+    if (k) { // one-pole low-pass at ~150 Hz, scaled back to the same RMS
+      const float al = 1.0f - expf(-2.0f * 3.14159265f * 150.0f / 22050.0f);
+      float y = 0;
+      double e0 = 0, e1 = 0;
+      for (float &v : x) {
+        e0 += (double)v * v;
+        y += al * (v - y);
+        v = y;
+        e1 += (double)v * v;
+      }
+      const float g = (float)sqrt(e0 / e1);
+      for (float &v : x)
+        v *= g;
+    }
+    Analyzer a;
+    int n = 0, high = 0, maxV = 0, sig = 0;
+    synth::run(a, x, [&](double t, Analyzer &an) {
+      if (t < 5.0)
+        return;
+      const int v = an.features().groove;
+      n++;
+      sig += (an.features().status & proto::kStatusSignal) ? 1 : 0;
+      high += v > 0.3 * 255 ? 1 : 0;
+      maxV = v > maxV ? v : maxV;
+    });
+    printf("    %s noise: signal %d%% of %d frames, groove above 0.3 in %d frames (%.2f%%), max %d\n", k ? "low-passed" : "white", 100 * sig / n,
+           n, high, 100.0 * high / n, maxV);
+    TEST_ASSERT_TRUE_MESSAGE(sig > n / 2, "the noise does not pass the signal gate, the test would prove nothing");
+    TEST_ASSERT_TRUE_MESSAGE(high <= n / 20, "groove above 0.3 in more than 5% of the frames of pure noise");
+  }
 }
 
 int main() {
@@ -151,5 +204,6 @@ int main() {
   RUN_TEST(test_groove_rises_within_a_second_of_the_kick);
   RUN_TEST(test_groove_dips_on_a_one_bar_drop);
   RUN_TEST(test_groove_without_signal_and_level_independent);
+  RUN_TEST(test_groove_stays_low_in_noise);
   return UNITY_END();
 }

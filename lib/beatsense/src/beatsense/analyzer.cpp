@@ -198,7 +198,8 @@ void Analyzer::updateGroove(float lowAmp) {
   grooveRxy_ += grooveCorrAlpha_ * (x * y - grooveRxy_);
   grooveRxx_ += grooveCorrAlpha_ * (x * x - grooveRxx_);
   grooveRyy_ += grooveCorrAlpha_ * (y * y - grooveRyy_);
-  const float f2 = cfg_.grooveFloorAmp * cfg_.grooveFloorAmp;
+  const float floorAmp = fmaxf(cfg_.grooveFloorRel * lowLong_, cfg_.grooveFloorAbs); // relative: level independent
+  const float f2 = floorAmp * floorAmp;
   const float corr = fmaxf(grooveRxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveRyy_), f2);
   const float back = (bdRatio_ - cfg_.grooveRatioLow) / (cfg_.grooveRatioHigh - cfg_.grooveRatioLow);
   const float steady = (corr - cfg_.grooveCorrLow) / (cfg_.grooveCorrHigh - cfg_.grooveCorrLow);

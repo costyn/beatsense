@@ -123,8 +123,10 @@ struct Config {
   float grooveCorrS = 0.5f;       // time constant of the correlation sums (two beats at 120 BPM)
   float grooveCorrLow = 0.3f;     // correlation coefficient mapped to 0...
   float grooveCorrHigh = 0.7f;    // ...and to 1
-  float grooveFloorAmp = 0.002f;  // the modulation's energy never counts for less than this amplitude (-54 dBFS, like agcFloorDb), so
-                                  // a nearly empty low band (noise, leakage) cannot produce a correlation out of nothing
+  float grooveFloorRel = 0.05f;   // the modulation's amplitude never counts for less than this fraction of the slow low-band average
+                                  // (lowLong_): relative, so the groove does not depend on the input level (an absolute floor zeroed it on
+                                  // a room mic). It only stops a nearly constant low band from correlating its own wiggles
+  float grooveFloorAbs = 3e-5f;   // ...and never less than this amplitude (-90 dBFS, near the INMP441 noise), only to avoid dividing by ~0
 
   // --- Beat phase ---
   uint16_t phaseEveryFrames = 4; // measurement + PLL correction cadence (~46 ms)
