@@ -156,6 +156,21 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
       modulation of the low band is far below that, the floor dominated the denominator, the correlation went to 0 and the groove stayed
       0 in a steady groove with confidence 255 (offline: Satory at `--gain-db -45` and -55 had p50 0). The same lesson as the onset
       output floor: absolute amplitude floors break on the quiet mic.
+      *Or at two beats* (`corr2`): many tracks have a two-beat low-band pattern (kick on 1 and 3, bass or nothing on 2 and 4; the Beirut
+      remix, 120 BPM): the correlation at one beat is ~0 (0.0-0.1 measured), at two beats 0.8-0.99, and the one-beat check alone gave groove
+      0 for 86% of its locked frames. The same machinery at a lag of `2 * beat` (`R2xy`, `R2xx`, `R2yy`; the history buffer `kGrooveHist` is
+      now 256 frames, 2 beats at `bpmMin` = 130 frames; +512 B RAM), and the steadiness factor is the **better of the two ramped results**
+      (max, not a blend: a pattern that repeats at one beat repeats at two as well, so the second is only ever the extra route in).
+      The two-beat route is stricter than the one-beat one, because the false positive it opens is real: a bass line with a two-beat
+      pattern (Satory's build, 4:57-4:59 and 5:10-5:13) reached corr2 0.5-0.7 and groove 0.65-1.0 for 1-2 s each with the one-beat constants. Three guards, each
+      measured on that build and on the Beirut track: its own sums with a **longer time constant** (`grooveCorr2Scale` 8 x `grooveCorrS` =
+      4 s; a repeat at twice the lag needs a longer window, 1x: Satory build 3.2 s above 0.3, 3x: 2.0 s, 6x: 0.7 s, 8x: 0 s, Beirut 2% of
+      its groove sections below 0.3 either way), its own **stricter ramp** (`grooveCorr2Low` 0.4 -> 0, `grooveCorr2High` 0.8 -> 1; 6x with 0.4/0.8 gave 0.1 s), and a **live gate** (`grooveLiveLow` 0.1 -> 0, `grooveLiveHigh` 0.3 -> 1 on the short-window / long-window
+      modulation power `Rxx / R2xx`): the long normalised sums decay together when the kick stops, so the remembered correlation stayed
+      ~0.3 above the breakdown guard and failed `test_groove_stays_low_with_low_band_remnant` (0.15 limit). The breakdown ratio and the third-beat
+      term still apply to it unchanged. The third-beat (rolling bass) term needs no two-beat counterpart: a rolling bass at 1/3 beat
+      has a 1/3 beat repeat whatever its bar pattern, and that term already takes it away. The slower window costs nothing on rises in
+      practice (Beirut after its break: first above 0.5 at 4:50.3 vs 4:50.1 with 4x), because a one-beat kick still takes the fast route.
       A steady kick, with the bass that goes with it, repeats every beat (0.75-0.95 on the three test tracks); a rumble, a held bass note (no modulation: correlation 0) or a 3-against-2 pattern (the rolling bass of Satory's build, period 2/3 beat)
       does not.
     - *Why not confidence*: it is smoothed (rise 1 s, fall 1.5 s) and measures the tempo comb over 6 s, so it lags a break by seconds, it
@@ -187,7 +202,15 @@ Add the host's own render latency through `kRegLatencyMs` (int8 ms, positive = p
     breakdown ratio at 1.0 and lets the groove reach 0.7-0.84 for a second or so; at -65 dB the music is below the gate and there is no
     groove, by design. Noise only (white, pink, brown, low-passed room tone, just above the gate and louder): groove above 0.3 in <= 0.2%
     of the frames, p95 0.
-    Tests (`test/test_groove`): >= 0.85 in a steady synthetic groove and at -25, -45 and -55 dB (-65 dB is below the gate), no groove in
+    *Two-beat measurement* (tracks/, converted to 22.05 kHz mono, before -> after; Beirut groove per 20 s, locked frames 79%): below 0.3
+      85.8% -> 22.1% of the locked frames (p50 0 -> 250; the rest is its real breakdown 3:20-4:50, groove 0.00 in both), other tracks
+      within -4/+0.5 points (Satory 31.0 -> 30.1, Time Bender 23.4 -> 19.9, Concrete 26.7 -> 23.4, Vapour 19.8 -> 19.4); at --gain-db -45
+      the same. Flips (crossings of 0.3 and 0.6, locked frames): Satory 188 -> 178, Time Bender 134 -> 86, Beirut 462 -> 190, Concrete
+      66 -> 54, Vapour 16 -> 16. Satory build (4:35-5:12): max 0.27 -> 0.27, 0 s above 0.3 (the 0.43 quoted above was measured on another conversion of the file); 5:10-5:19
+      unchanged at 2.9 s above 0.3 (the rolling-bass stretch). Weak spots left: Beirut 0:40 and 5:20 windows are 0.79-0.80 median because
+      the breakdown ratio ripples with a 1 s kick period (the 1 s average of a pattern that repeats every second).
+    Tests (`test/test_groove`): >= 0.85 in a steady synthetic groove and at -25, -45 and -55 dB (-65 dB is below the gate), >= 0.85 in a
+    synthetic two-beat pattern (kick on 1 and 3, a bass drone; 0 on main: the one-beat check alone reads it as no groove), no groove in
     white and low-passed noise just above the gate, <= 0.15 within 1.5 s of the kick stopping and for the
     rest of the break, still low with a 60 Hz bass note playing (energy but no repetition), back to 0.85 within 1 s of the kick returning,
     a clear dip in a one-bar drop, 0 without signal.

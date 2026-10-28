@@ -71,6 +71,40 @@ void test_groove_full_in_steady_groove() {
   TEST_ASSERT_TRUE_MESSAGE(minV >= 0.85 * 255, "groove below 0.85 in a steady groove");
 }
 
+// A two-beat low-band pattern (kick on beats 1 and 3, nothing but a steady bass note on 2 and 4, as in a track whose low band repeats every two beats and
+// not every beat): the one-beat correlation is ~0 there, so it only reads as groove through the two-beat lag. Full once the longer window has
+// filled (about 12 s), and it stays full.
+void test_groove_full_with_a_two_beat_pattern() {
+  synth::Spec sp;
+  sp.bpm = 120;
+  sp.seconds = 50;
+  sp.noiseRms = 0.005;
+  sp.kickAmp = 0; // kicks are added below, on every other beat only
+  sp.bassFromS = 0; // a steady bass note under the pattern, like the tracks have: it keeps the one-second average level
+  sp.bassAmp = 0.12;
+  sp.breakFromS = sp.seconds + 10;
+  sp.breakToS = sp.seconds + 10; // (the drone runs until breakToS; the break itself is never reached)
+  std::vector<float> x = synth::render(sp);
+  const double beat = 60.0 / sp.bpm;
+  for (int b = 0; sp.startS + b * beat < sp.seconds - 0.5; b++) {
+    const double t0 = sp.startS + b * beat;
+    double ph = 0;
+    for (size_t i = (size_t)(t0 * synth::kFs); b % 2 == 0 && i < x.size() && i < (size_t)((t0 + 0.4) * synth::kFs); i++) {
+      const double t = (double)i / synth::kFs - t0;
+      ph += 2.0 * M_PI * (55.0 + 65.0 * exp(-t / 0.03)) / synth::kFs; // kick: 120 -> 55 Hz sweep
+      x[i] += (float)(0.5 * exp(-t / 0.07) * sin(ph));
+    }
+  }
+  Analyzer a;
+  int minV = 255;
+  synth::run(a, x, [&](double t, Analyzer &an) {
+    if (t >= 15.0 && t < sp.seconds - 2.0) // the last kicks are before sp.seconds - 0.5
+      minV = an.features().groove < minV ? an.features().groove : minV;
+  });
+  printf("    lowest groove after 15 s with a two-beat pattern: %d\n", minV);
+  TEST_ASSERT_TRUE_MESSAGE(minV >= 0.85 * 255, "groove below 0.85 in a two-beat pattern");
+}
+
 // The kickless breakdown (hats and nothing else in the low band): the groove is gone within 1.5 s of the last kick and stays gone.
 void test_groove_drops_in_kickless_breakdown() {
   const synth::Spec sp = breakSpec();
@@ -221,6 +255,7 @@ void test_groove_stays_low_in_noise() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_groove_full_in_steady_groove);
+  RUN_TEST(test_groove_full_with_a_two_beat_pattern);
   RUN_TEST(test_groove_drops_in_kickless_breakdown);
   RUN_TEST(test_groove_stays_low_with_low_band_remnant);
   RUN_TEST(test_groove_stays_low_with_a_rolling_bass);
