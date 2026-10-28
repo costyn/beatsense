@@ -121,6 +121,11 @@ struct Config {
   float grooveRatioHigh = 0.9f;   // ...and to 1 (linear in between)
   float grooveHighpassS = 0.25f;  // slow mean subtracted from the low-band amplitude before correlating (leaves the kick modulation)
   float grooveCorrS = 0.5f;       // time constant of the correlation sums (two beats at 120 BPM)
+  float grooveCorr2Scale = 8.0f;  // time constant of the two-beat correlation sums, in units of grooveCorrS (4 s: a repeat at two beats is slow to measure)
+  float grooveCorr2Low = 0.4f;    // the two-beat correlation has its own, stricter ramp: mapped to 0...
+  float grooveCorr2High = 0.8f;   // ...and to 1 (the better of the one-beat and two-beat results counts)
+  float grooveLiveLow = 0.1f;     // short-window / long-window modulation power mapped to 0... (the two-beat result needs the pattern to be
+  float grooveLiveHigh = 0.3f;    // ...and to 1  playing now, not just remembered)
   float grooveCorrLow = 0.3f;     // correlation coefficient mapped to 0...
   float grooveCorrHigh = 0.7f;    // ...and to 1
   float grooveThirdLow = 0.3f;    // correlation at a third of a beat mapped to 0... (a rolling bass, 3 pulses per beat, repeats at that lag; a kick
@@ -272,14 +277,15 @@ private:
   uint32_t bdCount_ = 0; // hops since the signal came on (the slow average is a plain average until its window has filled)
   float bdRatio_ = 1.0f; // lowShort_ / lowLong_ as of the last hop; 1 without signal
 
-  // Groove level: low-band amplitude with its slow mean removed, kept for one beat (the longest period is 60 / bpmMin = 0.75 s = 65 frames)
-  static constexpr size_t kGrooveHist = 128;
+  // Groove level: low-band amplitude with its slow mean removed, kept for two beats (the longest is 120 / bpmMin = 1.5 s = 130 frames)
+  static constexpr size_t kGrooveHist = 256;
   float grooveHist_[kGrooveHist] = {0};
   size_t grooveHead_ = 0;      // index of the newest entry
   float grooveMean_ = 0;
   bool grooveInit_ = false;    // grooveMean_ holds a value (reset when the signal drops)
   float grooveRxy_ = 0, grooveRxx_ = 0, grooveRyy_ = 0; // exponentially weighted sums of x*x(-beat), x*x, x(-beat)*x(-beat)
   float grooveTxy_ = 0, grooveTyy_ = 0;
+  float grooveR2xy_ = 0, grooveR2xx_ = 0, grooveR2yy_ = 0; // the same at a lag of two beats
   uint8_t grooveOut_ = 0;
 
   // Beat clock (phase in beats, position within the current beat)
@@ -311,7 +317,7 @@ private:
 
   // Derived time constants (per hop)
   float levelDecay_, agcAttack_, agcDecay_, fluxMeanAlpha_, onsetPeakDecay_, energyShortAlpha_, confRiseAlpha_, confFallAlpha_;
-  float bdShortAlpha_, bdLongAlpha_, bdHeldAlpha_, grooveHpAlpha_, grooveCorrAlpha_;
+  float bdShortAlpha_, bdLongAlpha_, bdHeldAlpha_, grooveHpAlpha_, grooveCorrAlpha_, grooveCorr2Alpha_;
 };
 
 // Frame as sent over I2C

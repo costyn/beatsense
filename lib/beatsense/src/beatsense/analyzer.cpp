@@ -57,6 +57,7 @@ Analyzer::Analyzer(const Config &cfg) : cfg_(cfg) {
   bdHeldAlpha_ = alphaFor(cfg_.breakdownHeldLongS, hopS);
   grooveHpAlpha_ = alphaFor(cfg_.grooveHighpassS, hopS);
   grooveCorrAlpha_ = alphaFor(cfg_.grooveCorrS, hopS);
+  grooveCorr2Alpha_ = alphaFor(cfg_.grooveCorrS * cfg_.grooveCorr2Scale, hopS);
   setAgcMode(cfg_.agcMode);
   const float floorAmp = powf(10.0f, cfg_.agcFloorDb / 20.0f);
   for (size_t g = 0; g < Config::kGroups; g++) {
@@ -166,7 +167,7 @@ void Analyzer::updateBreakdown(float lowAmp) {
   else if (breakdown_ && ratio > cfg_.breakdownExit) breakdown_ = false;
 }
 
-// Groove level = (the low band is back) x (the low band repeats at the beat period) x (it does not also repeat at a third of a beat). The first factor is the breakdown ratio; the second
+// Groove level = (the low band is back) x (the low band repeats at the beat period or at two beats) x (it does not also repeat at a third of a beat). The first factor is the breakdown ratio; the second
 // is the correlation coefficient between the low-band amplitude, mean-removed, and the same signal one beat earlier, from exponentially
 // weighted sums: a steady kick (and the bass that goes with it) repeats every beat, a rumble, a bass note, or a pattern at another
 // metrical level (3 against 2) does not, whatever its level. A rolling bass (3 pulses per beat) repeats at the beat too, but also at a third
@@ -176,6 +177,7 @@ void Analyzer::updateGroove(float lowAmp) {
     grooveInit_ = false;
     grooveRxy_ = grooveRxx_ = grooveRyy_ = 0;
     grooveTxy_ = grooveTyy_ = 0;
+    grooveR2xy_ = grooveR2xx_ = grooveR2yy_ = 0;
     grooveOut_ = 0;
     return;
   }
@@ -200,6 +202,16 @@ void Analyzer::updateGroove(float lowAmp) {
   grooveRxy_ += grooveCorrAlpha_ * (x * y - grooveRxy_);
   grooveRxx_ += grooveCorrAlpha_ * (x * x - grooveRxx_);
   grooveRyy_ += grooveCorrAlpha_ * (y * y - grooveRyy_);
+  // The same at two beats: a two-beat kick / bass pattern does not repeat at one beat (correlation ~0) but does at two. Its own sums
+  // with a longer time constant, since a repeat at twice the lag needs twice the window to be measured.
+  const float lag2 = clampf(2.0f * lag, 1.0f, (float)(kGrooveHist - 2));
+  const size_t l2i = (size_t)lag2;
+  const float l2a = grooveHist_[(grooveHead_ + kGrooveHist - l2i) % kGrooveHist];
+  const float l2b = grooveHist_[(grooveHead_ + kGrooveHist - l2i - 1) % kGrooveHist];
+  const float y2 = l2a + (lag2 - (float)l2i) * (l2b - l2a);
+  grooveR2xy_ += grooveCorr2Alpha_ * (x * y2 - grooveR2xy_);
+  grooveR2xx_ += grooveCorr2Alpha_ * (x * x - grooveR2xx_);
+  grooveR2yy_ += grooveCorr2Alpha_ * (y2 * y2 - grooveR2yy_);
   const float lagT = lag / 3.0f;
   const size_t ti = (size_t)lagT;
   const float ta = grooveHist_[(grooveHead_ + kGrooveHist - ti) % kGrooveHist];
@@ -209,9 +221,15 @@ void Analyzer::updateGroove(float lowAmp) {
   grooveTyy_ += grooveCorrAlpha_ * (yt * yt - grooveTyy_);
   const float floorAmp = fmaxf(cfg_.grooveFloorRel * lowLong_, cfg_.grooveFloorAbs); // relative: level independent
   const float f2 = floorAmp * floorAmp;
-  const float corr = fmaxf(grooveRxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveRyy_), f2);
+  const float corr1 = fmaxf(grooveRxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveRyy_), f2);
+  const float corr2 = fmaxf(grooveR2xy_, 0.0f) / fmaxf(sqrtf(grooveR2xx_ * grooveR2yy_), f2);
   const float back = (bdRatio_ - cfg_.grooveRatioLow) / (cfg_.grooveRatioHigh - cfg_.grooveRatioLow);
-  const float steady = (corr - cfg_.grooveCorrLow) / (cfg_.grooveCorrHigh - cfg_.grooveCorrLow);
+  const float steady1 = (corr1 - cfg_.grooveCorrLow) / (cfg_.grooveCorrHigh - cfg_.grooveCorrLow);
+  // The long window remembers the kicks for seconds after they stop (the normalised sums decay together), so the two-beat result also
+  // needs the modulation to be there now: the short window's power against the long one's.
+  const float live = (grooveRxx_ / fmaxf(grooveR2xx_, f2 * f2) - cfg_.grooveLiveLow) / (cfg_.grooveLiveHigh - cfg_.grooveLiveLow);
+  const float steady2 = clampf(live, 0.0f, 1.0f) * (corr2 - cfg_.grooveCorr2Low) / (cfg_.grooveCorr2High - cfg_.grooveCorr2Low);
+  const float steady = fmaxf(clampf(steady1, 0.0f, 1.0f), clampf(steady2, 0.0f, 1.0f)); // repeats at one beat or at two
   const float cthird = fmaxf(grooveTxy_, 0.0f) / fmaxf(sqrtf(grooveRxx_ * grooveTyy_), f2);
   const float rolling = (cthird - cfg_.grooveThirdLow) / (cfg_.grooveThirdHigh - cfg_.grooveThirdLow);
   grooveOut_ = toU8(clampf(back, 0.0f, 1.0f) * clampf(steady, 0.0f, 1.0f) * (1.0f - clampf(rolling, 0.0f, 1.0f)));
